@@ -1,0 +1,14 @@
+version: "3"
+services:
+  cube-proxy:
+    image: __CUBE_PROXY_IMAGE__
+    container_name: __CUBE_PROXY_CONTAINER_NAME__
+    build:
+      context: __CUBE_PROXY_BUILD_CONTEXT__
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    network_mode: host
+    volumes:
+      - __CUBE_PROXY_CERT_DIR__:/usr/local/openresty/nginx/certs:ro
+      - __CUBE_PROXY_GLOBAL_CONF__:/usr/local/openresty/nginx/conf/global/global.conf:ro
+      - __CUBE_PROXY_NGINX_CONF__:/usr/local/openresty/nginx/conf/nginx.conf:ro
