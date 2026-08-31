@@ -1,0 +1,48 @@
+
+  
+
+UNC_CHA OM TCE LE
+juratioi
+
+ 
+
+6.3 Intel® Performance Counter Monitor (PCM)
+
+Intel Performance Counter Monitor (PCM) is a powerful toolset that provides detailed insight into the internal workings of Intel processors,
+aiding in optimizing software performance, For an overview of PCM, see™
+
+” (6)
+
+One of its key components is the PCM-PCle tool, specifically designed to monitor Direct Data I/O (DDIO) transactions. The tool can track
+both upstream and downstream reads and writes, providing a comprehensive view of data flow within the system, Furthermore, PCM-PCIe
+can show Last Level Cache (LLC) hits and misses for upstream transactions.
+
+ 
+
+PCM-IIO tool offers similar capabilities in monitoring upstream and downstream transactions but adds an extra layer of granularity by
+providing a breakdown per PCle bus. Unlike PCM-PCle, which provides aggregate data, PCM-IIO can isolate and display information for
+individual PCIe buses. This feature is particularly useful for systems with multiple PCIe devices, as it allows for a more detailed analysis and
+understanding of each device's performance and data transactions.
+
+ 
+
+Using the PCM-PCIe and PCM-IIO tools, developers and system administrators can gain a deeper understanding of system performance and
+make informed decisions to improve efficiency and throughput.
+
+7 Conclusion
+
+Intel® Data Direct I/O Technology transparently provides 1/0 devices with the ability to directly access the last level cache, which can
+drastically increase performance due to lower latencies, CPU utilization, and higher bandwidth. While this feature is transparent to the
+operating system, IO devices, and I/O device drivers, observing the efficiency of Intel® DDIO with performance monitoring to further
+optimize an 1/0 flow to increase LLC hit rates can be beneficial. Such optimization may include:
+
++ reuse of memory addresses
+
++ improving temporal locality
+
++ improving time to use of the inbound data
+
++ reducing the working set of an application
+
+https:/Awww.intel.com/content/www/us/en/developer/articles/technical/ddio-analysis-performance-monitoring.html 20/22
+

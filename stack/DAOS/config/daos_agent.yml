@@ -1,0 +1,19 @@
+# DAOS Agent configuration file
+
+name: daos_server
+access_points: ['daos-server']
+port: 10001
+
+runtime_dir: /var/run/daos_agent
+log_file: /tmp/daos_agent.log
+control_log_mask: info
+#control_log_mask: debug
+
+transport_config:
+  allow_insecure: true
+
+fabric_ifaces:
+- numa_node: 2
+  devices:
+    - iface: ens11
+      domain: ens11

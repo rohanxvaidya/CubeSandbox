@@ -1,0 +1,28 @@
+1, build the kernel module firtly. 
+2, load the kernel module with paramters, MUST input the BDF info for specific PCIe device.
+   e.g. insmod pci_mem.ko bus_number=0x45 device_number=0 function_number=0,   the 0:45:00.0 is the NIC BDF
+
+3, use the script to test:
+    bash pcimem.sh 1 0x80000 5 write 0x55AA  #  start =1 , offset=0x80000, loop count=5 , write value is 0x55AA.
+
+
+manual user guide,
+ 1. load kernel module:  
+   - sudo insmod pcie_mmio.ko bus_number=0 device_number=1 function_number=0
+   Set Loop Count:
+    echo 10 > /sys/kernel/pcimem/loop_count
+
+    Set Register Offset:
+    echo 0x10 > /sys/kernel/pcimem/offset
+
+    Set Operation (read/write):
+    echo "write" > /sys/kernel/pcimem/ops
+
+    Set Value to Write:
+    echo 0xDEADBEEF > /sys/kernel/pcimem/value
+
+    Start the Operation:
+    echo 1 > /sys/kernel/pcimem/start
+
+    Stop the Operation:
+    echo 0 > /sys/kernel/pcimem/start

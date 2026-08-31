@@ -1,0 +1,162 @@
+#!/usr/bin/env bpftrace
+
+BEGIN
+{
+    @start_ns = nsecs;
+    printf("[mlx5_ethtool_channels_live] start\n");
+}
+
+/* Generic ethtool netlink channels-set handler */
+kprobe:ethnl_set_channels
+{
+    printf("EVT t_ms=%llu stage=ethnl_set_channels pid=%d tid=%d comm=%s\n",
+           (nsecs - @start_ns) / 1000000, pid, tid, comm);
+}
+
+kretprobe:ethnl_set_channels
+{
+    printf("EVT t_ms=%llu stage=ethnl_set_channels_ret pid=%d tid=%d ret=%d\n",
+           (nsecs - @start_ns) / 1000000, pid, tid, retval);
+}
+
+/* mlx5 netdev ethtool op */
+kprobe:mlx5e_set_channels
+{
+    $dev = (struct net_device *)arg0;
+    $ch = (struct ethtool_channels *)arg1;
+
+        printf("EVT t_ms=%llu stage=mlx5e_set_channels dev=%s combined=%u rx=%u tx=%u other=%u pid=%d comm=%s\\n",
+           (nsecs - @start_ns) / 1000000,
+            $dev->name,
+           $ch->combined_count, $ch->rx_count, $ch->tx_count, $ch->other_count,
+           pid, comm);
+}
+
+kretprobe:mlx5e_set_channels
+{
+    printf("EVT t_ms=%llu stage=mlx5e_set_channels_ret pid=%d tid=%d ret=%d\n",
+           (nsecs - @start_ns) / 1000000, pid, tid, retval);
+}
+
+kprobe:mlx5e_ethtool_set_channels
+{
+    $ch = (struct ethtool_channels *)arg1;
+    printf("EVT t_ms=%llu stage=mlx5e_ethtool_set_channels combined=%u pid=%d comm=%s\n",
+           (nsecs - @start_ns) / 1000000, $ch->combined_count, pid, comm);
+}
+
+kprobe:mlx5e_safe_switch_params
+{
+    $params = (struct mlx5e_params *)arg1;
+    $reset = (int32)arg4;
+
+    printf("EVT t_ms=%llu stage=mlx5e_safe_switch_params new_num_channels=%u reset=%d pid=%d comm=%s\n",
+           (nsecs - @start_ns) / 1000000,
+           $params->num_channels, $reset, pid, comm);
+}
+
+kprobe:mlx5e_open_channels
+{
+    $chs = (struct mlx5e_channels *)arg1;
+    printf("EVT t_ms=%llu stage=mlx5e_open_channels chs->num=%u params.num_channels=%u pid=%d comm=%s\n",
+           (nsecs - @start_ns) / 1000000,
+           $chs->num, $chs->params.num_channels, pid, comm);
+}
+
+kprobe:mlx5e_open_channel
+{
+    $ix = (int32)arg1;
+    printf("EVT t_ms=%llu stage=mlx5e_open_channel ix=%d pid=%d comm=%s\n",
+           (nsecs - @start_ns) / 1000000, $ix, pid, comm);
+}
+
+kprobe:mlx5e_open_queues
+{
+    $c = (struct mlx5e_channel *)arg0;
+    printf("EVT t_ms=%llu stage=mlx5e_open_queues ch_ix=%d cpu=%d pid=%d comm=%s\n",
+           (nsecs - @start_ns) / 1000000, $c->ix, $c->cpu, pid, comm);
+}
+
+kprobe:mlx5e_open_rq
+{
+    $node = (int32)arg3;
+    printf("EVT t_ms=%llu stage=mlx5e_open_rq node=%d pid=%d comm=%s\n",
+           (nsecs - @start_ns) / 1000000, $node, pid, comm);
+}
+
+/* Driver queue create wrappers */
+kprobe:mlx5e_create_cq
+{
+    @e_cq_ptr[tid] = (uint64)arg0;
+}
+
+kretprobe:mlx5e_create_cq
+/@e_cq_ptr[tid]/
+{
+    $cq = (struct mlx5e_cq *)@e_cq_ptr[tid];
+    printf("EVT t_ms=%llu stage=mlx5e_create_cq_ret ret=%d cqn=%u irqn=%u pid=%d comm=%s\n",
+           (nsecs - @start_ns) / 1000000, retval, $cq->mcq.cqn, $cq->mcq.irqn, pid, comm);
+    delete(@e_cq_ptr[tid]);
+}
+
+kprobe:mlx5e_create_rq
+{
+    @e_rq_ptr[tid] = (uint64)arg0;
+}
+
+kretprobe:mlx5e_create_rq
+/@e_rq_ptr[tid]/
+{
+    $rq = (struct mlx5e_rq *)@e_rq_ptr[tid];
+    printf("EVT t_ms=%llu stage=mlx5e_create_rq_ret ret=%d rqn=%u pid=%d comm=%s\n",
+           (nsecs - @start_ns) / 1000000, retval, $rq->rqn, pid, comm);
+    delete(@e_rq_ptr[tid]);
+}
+
+/* Core HW object creation */
+kprobe:mlx5_core_create_cq
+{
+    @core_cq_ptr[tid] = (uint64)arg1;
+}
+
+kretprobe:mlx5_core_create_cq
+/@core_cq_ptr[tid]/
+{
+    $mcq = (struct mlx5_core_cq *)@core_cq_ptr[tid];
+    printf("EVT t_ms=%llu stage=mlx5_core_create_cq_ret ret=%d cqn=%u irqn=%u pid=%d comm=%s\n",
+           (nsecs - @start_ns) / 1000000, retval, $mcq->cqn, $mcq->irqn, pid, comm);
+    delete(@core_cq_ptr[tid]);
+}
+
+kprobe:mlx5_core_create_rq
+{
+    @core_rq_id_ptr[tid] = (uint64)arg3;
+}
+
+kretprobe:mlx5_core_create_rq
+/@core_rq_id_ptr[tid]/
+{
+    $idp = (uint32 *)@core_rq_id_ptr[tid];
+    printf("EVT t_ms=%llu stage=mlx5_core_create_rq_ret ret=%d rqn=%u pid=%d comm=%s\n",
+           (nsecs - @start_ns) / 1000000, retval, *$idp, pid, comm);
+    delete(@core_rq_id_ptr[tid]);
+}
+
+kprobe:mlx5_core_create_sq
+{
+    @core_sq_id_ptr[tid] = (uint64)arg3;
+}
+
+kretprobe:mlx5_core_create_sq
+/@core_sq_id_ptr[tid]/
+{
+    $idp = (uint32 *)@core_sq_id_ptr[tid];
+    printf("EVT t_ms=%llu stage=mlx5_core_create_sq_ret ret=%d sqn=%u pid=%d comm=%s\n",
+           (nsecs - @start_ns) / 1000000, retval, *$idp, pid, comm);
+    delete(@core_sq_id_ptr[tid]);
+}
+
+END
+{
+    printf("[mlx5_ethtool_channels_live] end\n");
+}

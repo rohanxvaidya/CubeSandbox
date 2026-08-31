@@ -1,0 +1,109 @@
+
+ 
+
+ 
+
+ 
+
+ 
+
+ 
+
+ 
+
+ 
+
+ 
+
+ 
+
+Discrete lO
+device or
+built-in SOC :
+accelerator Al UPI Link
+M2i0sF _ pr >
+\ pN
+_ read
+read / write sonnets Gis sca ar ;
+in case of a read or Memoryaccess !
+request a reac Reta
+
+ 
+
+3g ya E “N\A Inbound Request
+
+ 
+
+  
+
+ 
+
+ 
+
+ 
+
+ 
+
+ 
+
+ 
+
+ 
+
+ 
+
+ 
+
+ 
+
+ 
+
+‘ore Core |
+CHIYLLC CHA/LLC / 7
+7 NA Read Completion
+38: X ae Potential follow up
+) ¥ Snoop operations by CHA
+another
+Core Mm Core <q | coreit Core y
+CHA/LLC CHA/LLC h [oneeded = CHA/LLE = [
+Zz BL eaeeiee
+Memory Read or p
+weer, |
+7 a
+( 7
+\ L~ Core Core
+Bue = ye 7] cHajuc CHA/LLC
+
+ 
+
+ 
+
+ 
+
+ 
+
+ 
+
+ 
+
+ 
+
+Figure 3: High-Level Inbound 1/0 Transaction Flow Diagram
+
+Inbound transactions can be classified as reads or writes, LLC hits or misses, and full or partial transactions. Writes can further be classified
+into allocating (BIOS default) and non-allocating. In the following sections, we describe how the different types of inbound transactions are
+handled by IIO and the CHAs.
+
+2.2.1 Inbound Writes
+2.2.1.1 Inbound Writes Overview
+
+From the perspective of M2I0SF, inbound writes consist of two phases: ownership and data writeback, In the ownership phase, M2IOSF
+sends the request for ownership with an ITOM or ITOMCacheNear opcode to the CHA, and the CHA responds by giving the ownership of
+the targeted cache line to M2IOSF and updating the snoop filter accordingly. As with non-IO operations, giving the ownership of a cache
+line to M2IOSF requires that other owners of the cache line are notified via snoops to invalidate their copy, following the MESIF coherence
+protocol. After the ownership phase, M2IOSF sends the data message MTOI to the same CHA. The CHA looks up the data in the LLC and
+determines whether an LLC hit or an LLC miss needs to be serviced, The following sections describe how the CHA handles LLC hit and LLC
+miss scenarios.
+
+https:/Avww.intel,com/contentiwww/us/en/developer/articles/technical/ddio-analysis-performance-monitoring.html 5122
+

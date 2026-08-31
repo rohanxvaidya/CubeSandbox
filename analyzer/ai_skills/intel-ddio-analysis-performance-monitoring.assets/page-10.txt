@@ -1,0 +1,58 @@
+
+Event Name Description
+
+UNC_CHA_TOR_INSERTS.IO_HIT_ITOMCACHENEAR Counts the number of partial cache-line write requests that hit in cache,
+
+UNC_CHA_TOR_INSERTS.IO_MISS_ITOMCACHENEAR Counts the number of partial cache-line write requests that miss cache,
+
+UNC_CHA_TOR_INSERTS.IO_WBMTOI Counts the total number of modified data writebacks from local /O that
+have been inserted into the TOR. Each writeback transaction is one
+cache line. The data writeback phase occurs after the write request
+phase (ItoM) and applies to both partial and full cache-line writebacks.
+
+UNC_CHA_TOR_INSERTS.IO_CLFLUSH Counts the number of requests from local I/O to invalidate copies of the
+specified cache line. If the cache line that is requested for flush is in a
+modified state, it will result in a write-back to memory. CLFLUSH
+requests occur when configured for non-allocating writes, indicating that
+Intel® DDIO is disabled.
+
+Table 1: CHA TOR INSERT 1/O Events for Intel® DDIO
+
+Each of the TOR_INSERT events in the table above has a corresponding TOR_OCCUPANCY event. The occupancy event increments by the
+number of entries in the TOR every clock cycle and can be used to determine the average number of pending requests queued in the TOR.
+For example, if there are 5 pending PCIRDCUR requests in the TOR for 10 cycles, then UNC_CHA_TOR_OCCUPANCY.1O_PCIRDCUR will
+increment by 50 during those 10 cycles. The pair of events can be used to get an average of how long requests are in the queue. Event
+UNC_CHA_CLOCKTICKS can be used along with the occupancy events to determine the average TOR queue depth per request type.
+
+3.1.2 Metrics
+
+The following metrics can be used to simplify PerfMon event counts into a more human-readable result for analyzing the effectiveness of
+Intel® DDIO caching:
+
+Metric Name Formula Description
+io_percent_of_inbound 100 * (UNC_CHA_TOR_INSERTS.|O_MISS_PCIRDCUR/ —_ Percentage of inbound reads
+_feads_that_miss_I3 UNC_CHA_TOR_INSERTS.IO_PCIRDCUR) initiated by end device controllers
+
+that miss the LLC
+
+io_percent_of_inbound 100 * (UNC_CHA_TOR_INSERTS.|O_MISS_ITOM/ Percentage of inbound full cache-
+_full_writes_that_miss_I3 UNC_CHA_TOR_INSERTS.IO_ITOM) line writes initiated by end device
+controllers that miss the LLC
+
+io_percent_of_inbound 100* Percentage of inbound partial
+_Partial_writes_that_miss_13  (UNC_CHA_TOR_INSERTS.IO_MISS_ITOMCACHENEAR _ cache line writes initiated by end
+J UNC_CHA_TOR_INSERTS.|O_ITOMCACHENEAR) device controllers that miss the
+ule
+
+Table 2: CHA Intel® DDIO PerfMon Metrics
+
+3.2 M2IOSF Unit PerfMon
+
+The PerfMon event set available from the M2IOSF units does not give information about Intel® DDIO caching because they have no
+visibility into the LLC behavior, However, M2IOSF events are needed to correlate Intel® DDIO behavior back to a specific M2IOSF unit and
+PCI Express bifurcation (part). Recall that CHA events give socket level resolution without information at the M2IOSF or individual 1/O
+device granularity. There is no foolproof methodology for mapping Intel® DDIO LLC hits or misses back to an individual device when there
+are multiple 1/0 devices active. Still, the M2IOSF events give clues based on request rates and queuing.
+
+https:/Avww.intel,com/content/www/us/en/developer/articles/technical/ddio-analysis-performance-monitoring.html 10122
+

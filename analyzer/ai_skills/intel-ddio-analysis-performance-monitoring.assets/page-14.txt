@@ -1,0 +1,77 @@
+
+UNC_CHA_TOR_INSERTS.IO_ITOM
+UNC_CHA_TOR_INSERTS.IO_HIT_ITOM
+UNC_CHA_TOR_INSERTS.IO_MISS_ITOM
+
+UNC_CHA_TOR_INSERTS.IO_ITOMCACHENEAR Unified CHA and L3 Cache
+
+ 
+
+ 
+
+ 
+
+ 
+
+ 
+
+ 
+
+ 
+
+ 
+
+ 
+
+ 
+
+ 
+
+ 
+
+ 
+
+ 
+
+ 
+
+ 
+
+UNC_CHA_TOR_INSERTS.IO_HIT_ITOMCACHENEAR = |__ a
+UNC_CHA_TOR_INSERTS.IO_MISS_ITOMCACHENEAR rit
+ee a
+UNC_CHA_TOR_INSERTS.IO_PCIRDCUR Mesh
+UNC_CHA_TOR_INSERTS.IO_HIT_PCIRDCUR
+UNC_CHA_TOR_INSERTS.IO_MISS_PCIRDCUR M2I0SF
+c| eel PAG lot
+é 2 2
+‘| s| |3 IRP & IO Cache &
+UNC_lIO_TXN_REQ_OF_CPU.MEM_WRITE.PART[O-7] =| 18 3
+UNC_lIO_DATA_REQ_OF_CPU.MEM_WRITE.PART[0-7] el |e 2
+2 S s OM Relient icy a
+—| |& 6
+5] |a
+2 = =
+UNC_liO_TXN_REQ_OF_CPU.MEM_READ.PARTIO-7]
+UNC_llO_DATA_REQ_OF_CPU.MEM_READ.PART[O-7] PCIE Root Port
+PCIE SS
+
+ 
+
+ 
+
+ 
+
+ 
+
+ 
+
+Figure 6: PerfMon Events for Inbound I/O Flows
+
+Notice that for inbound read requests, the data is counted on the inbound side with “DATA_REQ_OF_CPU” events even though the data is
+flowing outbound/downstream in completion packets.
+
+The following figure maps PerfMon events to outbound/downstream I/O flows:
+
+https:/Avww.intel,com/content/www/us/en/developer/articles/technical/ddio-analysis-performance-monitoring.html 14122
+

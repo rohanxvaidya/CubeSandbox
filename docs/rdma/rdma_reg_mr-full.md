@@ -1,0 +1,1252 @@
+
+Optimizing tool selection...I’m tracing `ibv_reg_mr` from the userspace API down to the kernel path, starting by locating its definition in the available source trees and then checking whether the call goes through `ib_uverbs` into the kernel.
+
+Searched for regex `\bibv_reg_mr\b` (`mz`), 200 results
+
+Searched for regex `\bibv_dereg_mr\b` (`mz`), 197 results
+
+Read [](file:///home/mz/rdma)
+
+I found a local rdma-core tree, so I can answer this from source rather than guessing from installed headers. Next I’m pulling the exact userspace wrapper, provider implementation, and kernel command path for `ibv_reg_mr`.
+
+Read [](file:///home/mz/rdma/rdma-core/libibverbs/verbs.c#330-330), lines 330 to 380
+
+Read [](file:///home/mz/rdma/rdma-core/libibverbs/verbs.h#2638-2638), lines 2638 to 2688
+
+Read [](file:///home/mz/rdma/rdma-core/libibverbs/cmd.c#90-90), lines 90 to 170
+
+Read [](file:///home/mz/rdma/rdma-core/libibverbs/kern-abi.h#198-198), lines 198 to 214
+
+Read [](file:///home/mz/rdma/rdma-core/providers/mlx5/verbs.c#640-640), lines 640 to 730
+
+I have the userspace side. Next I’m locating the kernel entry point `ib_uverbs_reg_mr` in the kernel source so I can answer whether `ibv_reg_mr` crosses into the kernel and show that path.
+
+Searched for regex `\bib_uverbs_reg_mr\b` (`mz` · `linux/linux/**`), 5 results
+
+Searched for regex `\bIB_USER_VERBS_CMD_REG_MR\b` (`mz` · `linux/linux/**`), 3 results
+
+Searched for regex `\bexecute_cmd_write\b|\bwrite\(.*uverbs|RDMA_VERBS_IOCTL` (`mz` · `rdma/rdma-core/libibverbs/**`), 21 results
+
+Read [](file:///home/mz/rdma/rdma-core/libibverbs/cmd_ioctl.c#130-130), lines 130 to 175
+
+Read [](file:///home/mz/linux/linux/include/uapi/rdma/ib_user_verbs.h#360-360), lines 360 to 383
+
+Read [](file:///home/mz/linux/linux/drivers/infiniband/core/uverbs_cmd.c#700-700), lines 700 to 790
+
+Read [](file:///home/mz/linux/linux/drivers/infiniband/core/uverbs_cmd.c#3868-3868), lines 3868 to 3884
+
+I’ve confirmed the ioctl boundary into `ib_uverbs`. I’m doing one last trace from the kernel generic `reg_user_mr` callback into the mlx5 kernel driver so the answer includes the actual hardware-specific function too.
+
+Searched for regex `\.reg_user_mr\s*=|reg_user_mr\b` (`mz` · `linux/linux/drivers/infiniband/hw/mlx5/**`), 9 results
+
+Searched for regex `\bmlx5_ib_reg_user_mr\b|\bmlx5_ib_reg_user_mr_dmabuf\b|\breg_user_mr\b` (`mz` · `linux/linux/drivers/infiniband/hw/mlx5/**`), 8 results
+
+Searched for regex `alloc_mr\(|dereg_mr\(|reg_user_mr\(` (`mz` · `rdma/rdma-core/providers/mlx5/**`), 9 results
+
+Read [](file:///home/mz/rdma/rdma-core/providers/mlx5/verbs.c#788-788), lines 788 to 808
+
+Read [](file:///home/mz/linux/linux/drivers/infiniband/hw/mlx5/main.c#4288-4288), lines 4288 to 4306
+
+Read [](file:///home/mz/linux/linux/drivers/infiniband/hw/mlx5/mr.c#1578-1578), lines 1578 to 1655
+
+Yes. In your tree, ibv_reg_mr is a userspace libibverbs API, and for the normal mlx5 path it does cross into the kernel through an ioctl to the uverbs device.
+
+Where it is defined
+
+1. Public API declaration and macro wrapper
+   See verbs.h
+
+   Relevant code:
+
+    struct ibv_mr *ibv_reg_mr(struct ibv_pd *pd, void *addr, size_t length,
+    			  int access);
+
+    __attribute__((__always_inline__)) static inline struct ibv_mr *
+    __ibv_reg_mr(struct ibv_pd *pd, void *addr, size_t length, unsigned int access,
+    	     int is_access_const)
+    {
+    	if (is_access_const && (access & IBV_ACCESS_OPTIONAL_RANGE) == 0)
+    		return ibv_reg_mr(pd, addr, length, (int)access);
+    	else
+    		return ibv_reg_mr_iova2(pd, addr, length, (uintptr_t)addr,
+    					access);
+    }
+
+    #define ibv_reg_mr(pd, addr, length, access)                                   \
+    	__ibv_reg_mr(pd, addr, length, access,                                 \
+    		     __builtin_constant_p(				       \
+    			     ((int)(access) & IBV_ACCESS_OPTIONAL_RANGE) == 0))
+
+This means the source-level call in your perftest code is usually a macro expansion first, then it lands in the actual exported function or in ibv_reg_mr_iova2 depending on flags.
+
+2. Exported libibverbs symbol
+   See verbs.c
+
+   Relevant code:
+
+    LATEST_SYMVER_FUNC(ibv_reg_mr, 1_1, "IBVERBS_1.1",
+    		   struct ibv_mr *,
+    		   struct ibv_pd *pd, void *addr,
+    		   size_t length, int access)
+    {
+    	return ibv_reg_mr_iova2(pd, addr, length, (uintptr_t)addr, access);
+    }
+
+So the exported ibv_reg_mr symbol forwards into ibv_reg_mr_iova2.
+
+For mlx5, what userspace function actually handles it
+
+3. mlx5 provider userspace implementation
+   See verbs.c
+
+   Relevant code:
+
+    struct ibv_mr *mlx5_reg_mr(struct ibv_pd *pd, void *addr, size_t length,
+    			   uint64_t hca_va, int acc)
+    {
+    	struct mlx5_mr *mr;
+    	struct ibv_reg_mr cmd;
+    	int ret;
+    	enum ibv_access_flags access = (enum ibv_access_flags)acc;
+    	struct ib_uverbs_reg_mr_resp resp;
+
+    	mr = calloc(1, sizeof(*mr));
+    	if (!mr)
+    		return NULL;
+
+    	ret = ibv_cmd_reg_mr(pd, addr, length, hca_va, access, &mr->vmr, &cmd,
+    			     sizeof(cmd), &resp, sizeof(resp));
+    	if (ret) {
+    		free(mr);
+    		return NULL;
+    	}
+    	mr->alloc_flags = acc;
+
+    	return &mr->vmr.ibv_mr;
+    }
+
+This is still userspace. It prepares a command and calls ibv_cmd_reg_mr.
+
+Does it enter the kernel
+
+4. Yes, through execute_cmd_write and ioctl
+   See cmd.c and cmd_ioctl.c
+
+   Relevant code from the command builder:
+
+    int ibv_cmd_reg_mr(struct ibv_pd *pd, void *addr, size_t length,
+    		   uint64_t hca_va, int access,
+    		   struct verbs_mr *vmr, struct ibv_reg_mr *cmd,
+    		   size_t cmd_size,
+    		   struct ib_uverbs_reg_mr_resp *resp, size_t resp_size)
+    {
+    	...
+    	cmd->hca_va 	  = hca_va;
+    	cmd->pd_handle 	  = pd->handle;
+    	cmd->access_flags = access;
+
+    	ret = execute_cmd_write(pd->context, IB_USER_VERBS_CMD_REG_MR, cmd,
+    				cmd_size, resp, resp_size);
+    	...
+    }
+
+   Relevant code from the ioctl boundary:
+
+    if (ioctl(context->cmd_fd, RDMA_VERBS_IOCTL, &cmd->hdr))
+    	return errno;
+
+So this is the point where userspace crosses into the kernel. It is not a special CPU trap in the sense of an explicit trap instruction in your source; it is a normal syscall path via ioctl on the uverbs file descriptor.
+
+Kernel entry point
+
+5. Kernel uverbs handler for REG_MR
+   See uverbs_cmd.c and uverbs_cmd.c
+
+   Relevant code:
+
+    static int ib_uverbs_reg_mr(struct uverbs_attr_bundle *attrs)
+    {
+    	struct ib_uverbs_reg_mr_resp resp = {};
+    	struct ib_uverbs_reg_mr      cmd;
+    	...
+    	ret = uverbs_request(attrs, &cmd, sizeof(cmd));
+    	if (ret)
+    		return ret;
+
+    	...
+    	mr = pd->device->ops.reg_user_mr(pd, cmd.start, cmd.length, cmd.hca_va,
+    					 cmd.access_flags, NULL,
+    					 &attrs->driver_udata);
+    	...
+    	resp.lkey = mr->lkey;
+    	resp.rkey = mr->rkey;
+    	resp.mr_handle = uobj->id;
+    	return uverbs_response(attrs, &resp, sizeof(resp));
+    }
+
+   And the command is wired into the uverbs command table here:
+
+    DECLARE_UVERBS_WRITE(
+    	IB_USER_VERBS_CMD_REG_MR,
+    	ib_uverbs_reg_mr,
+    	UAPI_DEF_WRITE_UDATA_IO(struct ib_uverbs_reg_mr,
+    					struct ib_uverbs_reg_mr_resp),
+    	UAPI_DEF_METHOD_NEEDS_FN(reg_user_mr)),
+
+That confirms the kernel path is real and direct.
+
+Which mlx5 kernel function finally handles it
+
+6. mlx5_ib registers the reg_user_mr callback
+   See main.c
+
+   Relevant code:
+
+    .reg_user_mr = mlx5_ib_reg_user_mr,
+    .reg_user_mr_dmabuf = mlx5_ib_reg_user_mr_dmabuf,
+
+7. Actual mlx5 kernel MR registration function
+   See mr.c
+
+   Relevant code:
+
+    struct ib_mr *mlx5_ib_reg_user_mr(struct ib_pd *pd, u64 start, u64 length,
+    				  u64 iova, int access_flags,
+    				  struct ib_dmah *dmah,
+    				  struct ib_udata *udata)
+    {
+    	struct mlx5_ib_dev *dev = to_mdev(pd->device);
+    	struct ib_umem *umem;
+    	int err;
+
+    	...
+    	if (access_flags & IB_ACCESS_ON_DEMAND)
+    		return create_user_odp_mr(pd, start, length, iova, access_flags,
+    					  udata);
+    	umem = ib_umem_get(&dev->ib_dev, start, length, access_flags);
+    	if (IS_ERR(umem))
+    		return ERR_CAST(umem);
+    	return create_real_mr(pd, umem, iova, access_flags, dmah);
+    }
+
+This is the hardware-specific kernel implementation for mlx5 user MR registration.
+
+End-to-end call path
+
+Your call in perftest_resources.c goes through this path:
+
+1. perftest calls ibv_reg_mr
+2. libibverbs macro in verbs.h
+3. exported libibverbs function in verbs.c
+4. mlx5 provider userspace function in verbs.c
+5. ibv_cmd_reg_mr in cmd.c
+6. ioctl with RDMA_VERBS_IOCTL in cmd_ioctl.c
+7. kernel ib_uverbs_reg_mr in uverbs_cmd.c
+8. mlx5 kernel callback mlx5_ib_reg_user_mr in mr.c
+
+Short answer
+
+1. ibv_reg_mr is defined in userspace libibverbs, with its public declaration/macro in verbs.h and exported symbol in verbs.c.
+2. Yes, it does enter the kernel.
+3. The kernel entry is through ioctl on the uverbs fd, handled by uverbs_cmd.c.
+4. For mlx5, the final kernel driver callback is mr.c.
+
+If you want, I can do the same trace for ibv_dereg_mr and lay out its full userspace to kernel call chain too.
+
+
+I’m tracing the MR registration deeper now, specifically where user virtual memory becomes pinned pages and then mlx5 page-address entries for hardware, so I’ll extract the key functions and build the exact call stack.
+
+Searched for regex `\bcreate_real_mr\b|\bmlx5_ib_reg_user_mr\b|\bib_umem_get\b|\bmlx5_ib_populate_pas\b|\bmlx5_ib_populate_xlt\b|\bmlx5_ib_update_xlt\b|\breg_create\b` (`mz` · `linux/linux/drivers/infiniband/hw/mlx5/**`), 40 results
+
+Searched for regex `\bib_umem_get\b|\bib_umem_find_best_pgsz\b|\bib_umem_num_dma_blocks\b|\bdma\b` (`mz` · `linux/linux/drivers/infiniband/core/**`), 200 results
+
+Searched for regex `\bsg_dma_address\b|\bdma_map_sgtable_attrs\b|\bsgt_append\b|\bfor_each_sgtable_dma_sg\b` (`mz` · `linux/linux/**`), 200 results
+
+I’ve found the main hooks. Next I’m reading the exact mlx5 and core code where user pages are pinned, DMA-mapped, and copied into the mlx5 PAS/XLT tables so I can show the real physical-address translation point.
+
+Read [](file:///home/mz/linux/linux/drivers/infiniband/hw/mlx5/mr.c#1256-1256), lines 1256 to 1525
+
+Read [](file:///home/mz/linux/linux/drivers/infiniband/hw/mlx5/mem.c)
+
+Read [](file:///home/mz/linux/linux/drivers/infiniband/core/umem.c#151-151), lines 151 to 280
+
+Read [](file:///home/mz/linux/linux/include/rdma/ib_umem.h#1-1), lines 1 to 220
+
+The core mapping point is visible now: `ib_umem_get()` pins user pages and DMA-maps them, and `mlx5_ib_populate_pas()` writes those DMA addresses into the mlx5 page list. I’m pulling the UMR-based fast path too so the call stack covers both registration modes.
+
+Searched for regex `\balloc_cacheable_mr\b|\bmlx5r_umr_update_mr_pas\b|\bmlx5r_umr_can_load_pas\b|\bmlx5_ib_update_xlt\b` (`mz` · `linux/linux/drivers/infiniband/hw/mlx5/**`), 19 results
+
+Read [](file:///home/mz/linux/linux/drivers/infiniband/hw/mlx5/mr.c#1120-1120), lines 1120 to 1215
+
+Read [](file:///home/mz/linux/linux/drivers/infiniband/hw/mlx5/umr.c#1-1), lines 1 to 260
+
+I have the cacheable/UMR branch too. I’m reading the UMR update function now because that is where pre-created MRs get their translation table populated instead of embedding PAS in the original create command.
+
+Searched for regex `\brdma_block_iter_dma_address\b|\b__rdma_block_iter_start\b|\b__rdma_block_iter_next\b` (`mz` · `linux/linux/include/**`), 9 results
+
+Read [](file:///home/mz/linux/linux/drivers/infiniband/hw/mlx5/umr.c#780-780), lines 780 to 930
+
+Read [](file:///home/mz/linux/linux/drivers/infiniband/hw/mlx5/umr.c#930-930), lines 930 to 1085
+
+Read [](file:///home/mz/linux/linux/include/rdma/ib_verbs.h#2970-2970), lines 2970 to 3000
+
+I have the final translation sink identified, but I want to show the exact line where UMR writes DMA addresses into the XLT entries as well, since that is the fast path for many mlx5 MRs.
+
+Searched for regex `rdma_umem_for_each_dma_block|rdma_block_iter_dma_address|cpu_to_be64\(|cur_mtt|mlx5_mtt` (`mz` · `linux/linux/drivers/infiniband/hw/mlx5/umr.c`), 22 results
+
+Read [](file:///home/mz/linux/linux/drivers/infiniband/hw/mlx5/umr.c#680-680), lines 680 to 790
+
+I now have both direct-create and UMR-update paths. I’m adding one last check for the DMA mapping helper so I can be precise about whether these are CPU physical addresses or DMA/IOMMU addresses.
+
+Searched for regex `\bib_dma_map_sgtable_attrs\b` (`mz` · `linux/linux/include/**`), 2 results
+
+Searched for regex `\bib_dma_map_sgtable_attrs\b` (`mz` · `linux/linux/drivers/**`), 4 results
+
+Read [](file:///home/mz/linux/linux/include/rdma/ib_verbs.h#4270-4270), lines 4270 to 4292
+
+Read [](file:///home/mz/linux/linux/include/rdma/ib_verbs.h#4292-4292), lines 4292 to 4312
+
+The deep-dive answer is:
+
+MR registration does not map user virtual memory straight to one CPU physical address.  
+It pins user pages, DMA-maps them for the RDMA device, and then mlx5 programs those DMA addresses into the MR translation table.
+
+The important distinction:
+1. User buffer starts as user virtual address
+2. Kernel pins pages with GUP
+3. Kernel DMA-maps those pages with the device
+4. mlx5 writes DMA addresses into PAS or XLT entries
+5. Hardware uses those DMA addresses
+
+So the real mapping point is to DMA addresses, not necessarily raw host physical addresses. If an IOMMU is enabled, the NIC sees IOVA/DMA addresses, not CPU physical addresses.
+
+**Where the mapping happens**
+
+1. Userspace entry
+   Your perftest code calls perftest_resources.c
+
+2. Userspace crosses into kernel
+   libibverbs issues an ioctl in cmd_ioctl.c
+
+3. Kernel uverbs handler
+   The kernel receives REG_MR in uverbs_cmd.c
+
+4. mlx5 RDMA driver callback
+   The handler calls mlx5 via main.c
+
+5. mlx5 user MR registration
+   Actual mlx5 MR registration starts in mr.c
+
+6. User pages are pinned and DMA-mapped
+   This happens in umem.c
+
+7. DMA addresses are written into mlx5 PAS/XLT
+   Direct PAS path: mem.c
+   UMR/XLT path: umr.c, umr.c
+
+**Core call stack**
+
+Normal userspace to kernel call stack:
+1. perftest
+2. ibv_reg_mr
+3. ibv_cmd_reg_mr
+4. ioctl with RDMA_VERBS_IOCTL
+5. ib_uverbs_reg_mr
+6. pd->device->ops.reg_user_mr
+7. mlx5_ib_reg_user_mr
+8. ib_umem_get
+9. create_real_mr
+10. either:
+   direct create path -> reg_create -> mlx5_ib_populate_pas -> create_mkey
+   or cacheable/UMR path -> alloc_cacheable_mr -> mlx5r_umr_update_mr_pas
+
+**Key code**
+
+1. Userspace issues ioctl into kernel
+From cmd_ioctl.c
+
+```c
+if (ioctl(context->cmd_fd, RDMA_VERBS_IOCTL, &cmd->hdr))
+	return errno;
+```
+
+2. Kernel REG_MR handler
+From uverbs_cmd.c
+
+```c
+static int ib_uverbs_reg_mr(struct uverbs_attr_bundle *attrs)
+{
+	struct ib_uverbs_reg_mr_resp resp = {};
+	struct ib_uverbs_reg_mr      cmd;
+	struct ib_uobject           *uobj;
+	struct ib_pd                *pd;
+	struct ib_mr                *mr;
+	int                          ret;
+	struct ib_device *ib_dev;
+
+	ret = uverbs_request(attrs, &cmd, sizeof(cmd));
+	if (ret)
+		return ret;
+
+	...
+
+	mr = pd->device->ops.reg_user_mr(pd, cmd.start, cmd.length, cmd.hca_va,
+					 cmd.access_flags, NULL,
+					 &attrs->driver_udata);
+	...
+	resp.lkey = mr->lkey;
+	resp.rkey = mr->rkey;
+	resp.mr_handle = uobj->id;
+	return uverbs_response(attrs, &resp, sizeof(resp));
+}
+```
+
+3. mlx5 hooks reg_user_mr
+From main.c
+
+```c
+.reg_user_mr = mlx5_ib_reg_user_mr,
+.reg_user_mr_dmabuf = mlx5_ib_reg_user_mr_dmabuf,
+```
+
+4. mlx5 MR registration function
+From mr.c
+
+```c
+struct ib_mr *mlx5_ib_reg_user_mr(struct ib_pd *pd, u64 start, u64 length,
+				  u64 iova, int access_flags,
+				  struct ib_dmah *dmah,
+				  struct ib_udata *udata)
+{
+	struct mlx5_ib_dev *dev = to_mdev(pd->device);
+	struct ib_umem *umem;
+	int err;
+
+	...
+
+	umem = ib_umem_get(&dev->ib_dev, start, length, access_flags);
+	if (IS_ERR(umem))
+		return ERR_CAST(umem);
+	return create_real_mr(pd, umem, iova, access_flags, dmah);
+}
+```
+
+5. This is where user pages are pinned and DMA-mapped
+From umem.c
+
+```c
+struct ib_umem *ib_umem_get(struct ib_device *device, unsigned long addr,
+			    size_t size, int access)
+{
+	...
+	while (npages) {
+		...
+		pinned = pin_user_pages_fast(cur_base,
+					  min_t(unsigned long, npages,
+						PAGE_SIZE /
+						sizeof(struct page *)),
+					  gup_flags, page_list);
+		...
+		ret = sg_alloc_append_table_from_pages(
+			&umem->sgt_append, page_list, pinned, 0,
+			pinned << PAGE_SHIFT, ib_dma_max_seg_size(device),
+			npages, GFP_KERNEL);
+		...
+	}
+
+	...
+	ret = ib_dma_map_sgtable_attrs(device, &umem->sgt_append.sgt,
+				       DMA_BIDIRECTIONAL, dma_attr);
+	...
+}
+```
+
+This is the first real translation step:
+1. pin_user_pages_fast gets the pages behind the user VA
+2. ib_dma_map_sgtable_attrs creates DMA addresses for those pages
+
+6. DMA mapping helper
+From ib_verbs.h
+
+```c
+static inline int ib_dma_map_sgtable_attrs(struct ib_device *dev,
+					   struct sg_table *sgt,
+					   enum dma_data_direction direction,
+					   unsigned long dma_attrs)
+{
+	int nents;
+
+	if (ib_uses_virt_dma(dev)) {
+		nents = ib_dma_virt_map_sg(dev, sgt->sgl, sgt->orig_nents);
+		if (!nents)
+			return -EIO;
+		sgt->nents = nents;
+		return 0;
+	}
+	return dma_map_sgtable(dev->dma_device, sgt, direction, dma_attrs);
+}
+```
+
+This confirms the NIC-facing addresses are DMA-mapped addresses.
+
+**Where mlx5 turns DMA addresses into MR translations**
+
+There are two main paths.
+
+**Path A: direct PAS population during create_mkey**
+
+From mr.c
+
+```c
+static struct mlx5_ib_mr *reg_create(struct ib_pd *pd, struct ib_umem *umem,
+				     u64 iova, int access_flags,
+				     unsigned long page_size, bool populate,
+				     int access_mode, u16 st_index, u8 ph)
+{
+	...
+	pas = (__be64 *)MLX5_ADDR_OF(create_mkey_in, in, klm_pas_mtt);
+	if (populate) {
+		...
+		mlx5_ib_populate_pas(umem, 1UL << mr->page_shift, pas,
+				     pg_cap ? MLX5_IB_MTT_PRESENT : 0);
+	}
+	...
+	err = mlx5_ib_create_mkey(dev, &mr->mmkey, in, inlen);
+	...
+}
+```
+
+And the actual PAS fill is in mem.c
+
+```c
+void mlx5_ib_populate_pas(struct ib_umem *umem, size_t page_size, __be64 *pas,
+			  u64 access_flags)
+{
+	struct ib_block_iter biter;
+
+	rdma_umem_for_each_dma_block (umem, &biter, page_size) {
+		*pas = cpu_to_be64(rdma_block_iter_dma_address(&biter) |
+				   access_flags);
+		pas++;
+	}
+}
+```
+
+This is the clearest answer to your question.  
+The MR gets mapped to hardware addresses here:
+
+1. iterate DMA blocks from the umem
+2. fetch each DMA address with rdma_block_iter_dma_address
+3. write it into PAS
+
+**Path B: cacheable MR, then UMR loads XLT entries**
+
+The fast path choice is made in mr.c
+
+```c
+static struct ib_mr *create_real_mr(struct ib_pd *pd, struct ib_umem *umem,
+				    u64 iova, int access_flags,
+				    struct ib_dmah *dmah)
+{
+	...
+	xlt_with_umr = mlx5r_umr_can_load_pas(dev, umem->length);
+	if (xlt_with_umr) {
+		mr = alloc_cacheable_mr(pd, umem, iova, access_flags,
+					MLX5_MKC_ACCESS_MODE_MTT,
+					st_index, ph);
+	} else {
+		...
+		mr = reg_create(pd, umem, iova, access_flags, page_size,
+				true, MLX5_MKC_ACCESS_MODE_MTT,
+				st_index, ph);
+		...
+	}
+
+	...
+
+	if (xlt_with_umr) {
+		err = mlx5r_umr_update_mr_pas(mr, MLX5_IB_UPD_XLT_ENABLE);
+		...
+	}
+	return &mr->ibmr;
+}
+```
+
+The UMR translation fill happens in umr.c
+
+```c
+static int
+_mlx5r_umr_update_mr_pas(struct mlx5_ib_mr *mr, unsigned int flags, bool dd,
+			 size_t start_block, size_t nblocks)
+{
+	...
+	rdma_umem_for_each_dma_block(mr->umem, &biter, BIT(mr->page_shift)) {
+		...
+		if (dd) {
+			cur_ksm->va = cpu_to_be64(rdma_block_iter_dma_address(&biter));
+			...
+		} else {
+			cur_mtt->ptag =
+				cpu_to_be64(rdma_block_iter_dma_address(&biter) |
+					    MLX5_IB_MTT_PRESENT);
+			...
+		}
+		...
+	}
+	...
+}
+```
+
+That is the same logical mapping:
+1. iterate DMA blocks
+2. get DMA address
+3. write into XLT entries
+
+**Important nuance: physical address vs DMA address**
+
+If you are asking “where does it become a real address usable by the NIC?”, the answer is:
+1. umem.c at ib_dma_map_sgtable_attrs
+2. then mem.c or umr.c when those DMA addresses are copied into PAS/XLT
+
+If you mean “CPU physical address”, that is not what mlx5 programs directly in the general case. It programs DMA addresses returned by the DMA mapping layer.
+
+**Practical call stacks**
+
+Direct create path:
+1. ibv_reg_mr
+2. ibv_cmd_reg_mr
+3. ioctl RDMA_VERBS_IOCTL
+4. ib_uverbs_reg_mr
+5. mlx5_ib_reg_user_mr
+6. ib_umem_get
+7. pin_user_pages_fast
+8. sg_alloc_append_table_from_pages
+9. ib_dma_map_sgtable_attrs
+10. create_real_mr
+11. reg_create
+12. mlx5_ib_populate_pas
+13. rdma_block_iter_dma_address
+14. mlx5_ib_create_mkey
+
+UMR/cached path:
+1. ibv_reg_mr
+2. ibv_cmd_reg_mr
+3. ioctl RDMA_VERBS_IOCTL
+4. ib_uverbs_reg_mr
+5. mlx5_ib_reg_user_mr
+6. ib_umem_get
+7. pin_user_pages_fast
+8. sg_alloc_append_table_from_pages
+9. ib_dma_map_sgtable_attrs
+10. create_real_mr
+11. alloc_cacheable_mr
+12. mlx5r_umr_update_mr_pas
+13. rdma_umem_for_each_dma_block
+14. rdma_block_iter_dma_address
+15. mlx5r_umr_post_send_wait
+
+**Bottom line**
+
+The deepest mapping point for an mlx5 MR is:
+1. DMA mapping in umem.c
+2. PAS/XLT programming in mem.c or umr.c
+
+If you want, I can continue one level deeper and trace:
+1. how rdma_block_iter_dma_address is derived from the scatterlist
+2. how mlx5_ib_create_mkey sends the create mkey firmware command
+3. how the hardware mkey object is programmed in the FW command mailbox
+
+In the mlx5 RDMA kernel code, PAS and XLT are both translation data structures for an MR, meaning the address list that tells the NIC where the memory backing the MR lives.
+
+Short version:
+1. PAS is the page address list written directly into the create mkey command.
+2. XLT is the translation table updated later through UMR work requests.
+3. In practice, both carry the DMA page addresses for the MR. XLT is the more general runtime update mechanism.
+
+**PAS**
+
+PAS is the page address list.
+
+The clearest clue is the comment in mem.c:
+
+```c
+/*
+ * Fill in a physical address list. ib_umem_num_dma_blocks() entries will be
+ * filled in the pas array.
+ */
+void mlx5_ib_populate_pas(struct ib_umem *umem, size_t page_size, __be64 *pas,
+			  u64 access_flags)
+{
+	struct ib_block_iter biter;
+
+	rdma_umem_for_each_dma_block (umem, &biter, page_size) {
+		*pas = cpu_to_be64(rdma_block_iter_dma_address(&biter) |
+				   access_flags);
+		pas++;
+	}
+}
+```
+
+What it means:
+1. The driver iterates the MR's DMA blocks.
+2. For each block, it gets the DMA address.
+3. It writes that address into the PAS array.
+
+So PAS is literally the list of mapped DMA page addresses that will back the MR.
+
+In the direct mkey-create path, PAS is embedded in the create command buffer in mr.c:
+
+```c
+pas = (__be64 *)MLX5_ADDR_OF(create_mkey_in, in, klm_pas_mtt);
+if (populate) {
+	...
+	mlx5_ib_populate_pas(umem, 1UL << mr->page_shift, pas,
+			     pg_cap ? MLX5_IB_MTT_PRESENT : 0);
+}
+```
+
+That line is important because mlx5 uses one field named `klm_pas_mtt` for several translation formats depending on mode.
+
+**XLT**
+
+XLT means translation table.
+
+In the UMR code, XLT is the memory-key translation table that gets loaded or updated after the mkey already exists. The function names make that explicit in umr.c and umr.c:
+
+```c
+int mlx5r_umr_update_mr_pas(struct mlx5_ib_mr *mr, unsigned int flags)
+{
+	return mlx5r_umr_update_mr_pas_range(mr, flags, 0, 0);
+}
+
+int mlx5r_umr_update_xlt(struct mlx5_ib_mr *mr, u64 idx, int npages,
+			 int page_shift, int flags)
+```
+
+The core UMR path fills XLT entries from DMA addresses in umr.c:
+
+```c
+rdma_umem_for_each_dma_block(mr->umem, &biter, BIT(mr->page_shift)) {
+	...
+	if (dd) {
+		cur_ksm->va = cpu_to_be64(rdma_block_iter_dma_address(&biter));
+		...
+	} else {
+		cur_mtt->ptag =
+			cpu_to_be64(rdma_block_iter_dma_address(&biter) |
+				    MLX5_IB_MTT_PRESENT);
+		...
+	}
+}
+```
+
+So XLT is the translation content that UMR sends to hardware:
+1. for normal MRs, XLT entries are MTT entries
+2. for data-direct/KSM mode, XLT entries are KSM entries
+
+**Relationship between PAS and XLT**
+
+The simplest way to think about it:
+
+1. PAS is the initial page-address payload form.
+2. XLT is the generic translation-table concept used when loading/updating translations through UMR.
+3. They carry the same kind of backing information: DMA addresses for the MR pages.
+
+So PAS and XLT are not two unrelated things. PAS is one concrete encoding of MR translations. XLT is the broader “translation table” notion used by the UMR path.
+
+**Why both exist**
+
+mlx5 has two ways to get MR page translations into hardware:
+
+1. Direct create path
+   The driver creates the mkey and includes page translations immediately.
+   This uses PAS population in mr.c.
+
+2. UMR path
+   The driver creates or reuses an mkey and later updates its translation table via a special UMR QP.
+   This uses XLT updates in umr.c.
+
+You can see that branch in mr.c:
+
+```c
+xlt_with_umr = mlx5r_umr_can_load_pas(dev, umem->length);
+if (xlt_with_umr) {
+	mr = alloc_cacheable_mr(...);
+} else {
+	mr = reg_create(..., true, ...);
+}
+...
+if (xlt_with_umr) {
+	err = mlx5r_umr_update_mr_pas(mr, MLX5_IB_UPD_XLT_ENABLE);
+	...
+}
+```
+
+So:
+1. small/eligible MRs often go through cached mkey + UMR XLT update
+2. other MRs may be populated directly at mkey creation time with PAS
+
+**What the actual entries are**
+
+For normal user MR in UMR path:
+1. each XLT entry is an MTT entry
+2. the code writes `cur_mtt->ptag = dma_addr | MLX5_IB_MTT_PRESENT`
+
+For DD/KSM path:
+1. each XLT entry is a KSM entry
+2. the code writes `cur_ksm->va = dma_addr`
+
+That is why XLT is more general than PAS: it can represent different entry types depending on MR mode.
+
+**Practical interpretation**
+
+If you are reading mlx5 UMR code:
+1. “PAS” usually refers to the list of page/DMA addresses for MR backing pages.
+2. “XLT” refers to the translation table update operation or the translation table contents being pushed through UMR.
+3. In normal MTT-backed MRs, XLT is populated from the same DMA block iteration logic as PAS.
+
+**One-line summary**
+
+PAS is the page address list itself; XLT is the mlx5 memory-translation table mechanism, especially when that list is loaded or updated through UMR.
+
+If you want, I can next draw a small mapping table for:
+1. PAS
+2. MTT
+3. KLM
+4. KSM
+5. XLT
+and explain how those names relate inside mlx5 MR code.
+
+
+In this mlx5 kernel module for reg_mr function, where can i print the physical call for iova , show me the code,or where we can add the code to print
+
+I’m pulling the exact insertion points in mlx5 MR registration and translation loading so I can show you the best places to print IOVA alongside the DMA-backed addresses.
+
+Read [](file:///home/mz/linux/linux/drivers/infiniband/hw/mlx5/umr.c#731-731), lines 731 to 785
+
+Read [](file:///home/mz/linux/linux/drivers/infiniband/hw/mlx5/mr.c#1578-1578), lines 1578 to 1610
+
+Read [](file:///home/mz/linux/linux/drivers/infiniband/hw/mlx5/mr.c#1459-1459), lines 1459 to 1512
+
+Read [](file:///home/mz/linux/linux/drivers/infiniband/hw/mlx5/mem.c#34-34), lines 34 to 55
+
+Read [](file:///home/mz/linux/linux/drivers/infiniband/core/umem.c#224-224), lines 224 to 262
+
+If you want to print the address mapping for reg_mr in mlx5, there are three useful places, depending on what you mean by “physical”.
+
+Important point first:
+
+1. The user passes an IOVA and user virtual address.
+2. The kernel pins pages.
+3. The DMA layer creates DMA addresses for the NIC.
+4. mlx5 writes those DMA addresses into PAS or XLT.
+
+So for mlx5 MR debug, the most useful thing to print is usually:
+
+1. user virtual start
+2. iova
+3. DMA address programmed into PAS or XLT
+
+If you really want host physical page addresses, you need to print them during page pinning in ib_umem_get, before or around DMA mapping.
+
+**Best places to add prints**
+
+1. MR registration entry
+   This is the top-level mlx5 reg_mr entry in mr.c
+
+This file already has a debug line:
+
+```c
+mlx5_ib_dbg(dev, "start 0x%llx, iova 0x%llx, length 0x%llx, access_flags 0x%x\n",
+	    start, iova, length, access_flags);
+```
+
+If you want a stronger always-visible print, add something like this right below it:
+
+```c
+mlx5_ib_warn(dev,
+	     "REG_MR start=0x%llx iova=0x%llx len=0x%llx access=0x%x\n",
+	     start, iova, length, access_flags);
+```
+
+This tells you:
+1. user virtual start
+2. requested iova
+3. MR length
+4. access flags
+
+This is the best first print point.
+
+2. DMA mapping point in RDMA core
+   This is where pinned pages become DMA addresses in umem.c
+
+Right after this call:
+
+```c
+ret = ib_dma_map_sgtable_attrs(device, &umem->sgt_append.sgt,
+			       DMA_BIDIRECTIONAL, dma_attr);
+```
+
+add a loop like this:
+
+```c
+{
+	struct scatterlist *sg;
+	int i;
+
+	for_each_sgtable_dma_sg(&umem->sgt_append.sgt, sg, i) {
+		pr_info("umem dma_map: sg[%d] dma=0x%llx len=0x%x\n",
+			i,
+			(unsigned long long)sg_dma_address(sg),
+			sg_dma_len(sg));
+	}
+}
+```
+
+This is the best place to print the NIC-facing addresses.
+
+If you want to correlate with iova too, add:
+
+```c
+pr_info("umem mapped: user_addr=0x%lx iova=0x%llx len=0x%zx first_dma=0x%llx\n",
+	umem->address,
+	(unsigned long long)umem->iova,
+	umem->length,
+	(unsigned long long)ib_umem_start_dma_addr(umem));
+```
+
+3. PAS population
+   This is where mlx5 writes the DMA addresses into the MR page address list in mem.c
+
+Current code:
+
+```c
+rdma_umem_for_each_dma_block (umem, &biter, page_size) {
+	*pas = cpu_to_be64(rdma_block_iter_dma_address(&biter) |
+			   access_flags);
+	pas++;
+}
+```
+
+You can change it to:
+
+```c
+size_t idx = 0;
+
+rdma_umem_for_each_dma_block(umem, &biter, page_size) {
+	dma_addr_t dma = rdma_block_iter_dma_address(&biter);
+
+	pr_info("PAS[%zu]: iova=0x%llx dma=0x%llx page_size=0x%zx flags=0x%llx\n",
+		idx,
+		(unsigned long long)(umem->iova + idx * page_size),
+		(unsigned long long)dma,
+		page_size,
+		(unsigned long long)access_flags);
+
+	*pas = cpu_to_be64(dma | access_flags);
+	pas++;
+	idx++;
+}
+```
+
+This is probably the most direct answer to your question if you want to see how iova maps to what gets programmed into the MR translation.
+
+4. UMR XLT update path
+   If your MR goes through the cacheable UMR path, then the translation is loaded here in umr.c
+
+Current code:
+
+```c
+rdma_umem_for_each_dma_block(mr->umem, &biter, BIT(mr->page_shift)) {
+	...
+	if (dd) {
+		cur_ksm->va = cpu_to_be64(rdma_block_iter_dma_address(&biter));
+		...
+	} else {
+		cur_mtt->ptag =
+			cpu_to_be64(rdma_block_iter_dma_address(&biter) |
+				    MLX5_IB_MTT_PRESENT);
+		...
+	}
+}
+```
+
+Add prints like this:
+
+```c
+dma_addr_t dma = rdma_block_iter_dma_address(&biter);
+u64 xlt_iova = mr->ibmr.iova + (u64)cur_block_idx * BIT(mr->page_shift);
+
+pr_info("UMR XLT block=%zu iova=0x%llx dma=0x%llx page_shift=%u flags=0x%x\n",
+	cur_block_idx,
+	(unsigned long long)xlt_iova,
+	(unsigned long long)dma,
+	mr->page_shift,
+	flags);
+```
+
+Then keep the original assignment:
+
+```c
+cur_mtt->ptag =
+	cpu_to_be64(dma | MLX5_IB_MTT_PRESENT);
+```
+
+This is the right place if your MR is created through the UMR-loaded XLT path instead of direct PAS population.
+
+**If you want host physical page addresses**
+
+That is different from DMA addresses.
+
+The right place is in umem.c, inside the loop after pin_user_pages_fast returns pages.
+
+You already have page_list there:
+
+```c
+pinned = pin_user_pages_fast(cur_base,
+			  min_t(unsigned long, npages,
+				PAGE_SIZE /
+				sizeof(struct page *)),
+			  gup_flags, page_list);
+```
+
+Add:
+
+```c
+{
+	int j;
+
+	for (j = 0; j < pinned; j++) {
+		pr_info("umem pin: user_va=0x%lx phys=0x%llx page=%p\n",
+			cur_base + (unsigned long)j * PAGE_SIZE,
+			(unsigned long long)page_to_phys(page_list[j]),
+			page_list[j]);
+	}
+}
+```
+
+This prints host physical page addresses.
+
+But note:
+1. these are CPU physical page addresses
+2. after DMA mapping, the NIC may see different DMA addresses if IOMMU is enabled
+3. for hardware MR programming, DMA addresses are what matter
+
+**Recommended minimal debug plan**
+
+If you only want a practical answer, I would add prints in these two places:
+
+1. mr.c
+   Print start, iova, length, access flags.
+
+2. One of:
+   mem.c
+   or
+   umr.c
+
+That gives you:
+1. what userspace asked for
+2. what mlx5 actually programmed
+
+**Suggested exact spots**
+
+1. Top-level reg_mr entry:
+   mr.c
+
+2. Direct PAS path:
+   mem.c
+
+3. UMR XLT path:
+   umr.c
+
+4. Host physical page pinning:
+   umem.c
+
+**Which one should you use**
+
+1. To print iova only:
+   use mr.c
+
+2. To print iova to DMA mapping:
+   use mem.c or umr.c
+
+3. To print host physical pages:
+   use umem.c
+
+If you want, I can patch these printk or mlx5_ib_warn debug points into your kernel tree for you, with a small rate-limited version so the logs do not explode on large MRs.
+
+
+in this case, what's the difference for umem address and iova and physical address? are they the same, or are they have the same value?
+No, in general they are not the same thing.
+
+For this mlx5 MR path, think of them as three different address spaces:
+
+1. umem address
+2. iova
+3. physical or DMA-backed address used by hardware
+
+**Definitions**
+
+1. umem address
+   This is the userspace virtual address passed by the application.
+   In the kernel it is stored as umem->address in ib_umem.h and initialized in umem.c.
+
+   Relevant code:
+```c
+umem->length     = size;
+umem->address    = addr;
+...
+umem->iova = addr;
+```
+
+2. iova
+   This is the IO virtual address exposed through the MR to RDMA operations.
+   It is the address base used by the NIC when matching an incoming local or remote address against the MR.
+
+   In the generic umem setup, it starts equal to the user virtual address in umem.c:
+
+```c
+/*
+ * Drivers should call ib_umem_find_best_pgsz() to set the iova
+ * correctly.
+ */
+umem->iova = addr;
+```
+
+   But for mlx5 reg_mr, the MR path uses the iova value supplied from the userspace command and passes it down in mr.c:
+
+```c
+struct ib_mr *mlx5_ib_reg_user_mr(struct ib_pd *pd, u64 start, u64 length,
+				  u64 iova, int access_flags,
+				  struct ib_dmah *dmah,
+				  struct ib_udata *udata)
+```
+
+   Then that iova is used when creating the real MR in mr.c.
+
+3. physical address
+   Strictly speaking, for RDMA hardware programming the important value is usually the DMA address, not raw CPU physical address.
+
+   The user pages are pinned and DMA-mapped in umem.c:
+
+```c
+ret = ib_dma_map_sgtable_attrs(device, &umem->sgt_append.sgt,
+			       DMA_BIDIRECTIONAL, dma_attr);
+```
+
+   After that, mlx5 consumes DMA block addresses from the sg list.
+
+   Direct PAS path in mem.c:
+
+```c
+*pas = cpu_to_be64(rdma_block_iter_dma_address(&biter) |
+		   access_flags);
+```
+
+   UMR/XLT path in umr.c:
+
+```c
+cur_mtt->ptag =
+	cpu_to_be64(rdma_block_iter_dma_address(&biter) |
+		    MLX5_IB_MTT_PRESENT);
+```
+
+So the hardware translation entries are loaded from DMA addresses.
+
+**Are they the same value**
+
+**umem address vs iova**
+1. Often equal
+2. Not required to be equal
+
+In your normal ibv_reg_mr case, they are very often the same because userspace usually registers with iova equal to addr. That is the common case.
+
+But they are conceptually different:
+1. umem->address is the userspace virtual pointer start
+2. iova is the address base the MR advertises to the NIC
+
+That distinction is visible in mlx5 code where both start and iova are carried separately in mr.c:
+
+```c
+mlx5_ib_dbg(dev, "start 0x%llx, iova 0x%llx, length 0x%llx, access_flags 0x%x\n",
+	    start, iova, length, access_flags);
+```
+
+If userspace uses a variant like ibv_reg_mr_iova, then start and iova can intentionally differ.
+
+**umem address vs physical address**
+1. No, they are not the same
+2. umem address is a process virtual address
+3. physical address is the underlying page frame address
+4. one virtual range can map to many physical pages
+
+So there is not even a single physical address for a typical MR. There is a list of pages.
+
+**iova vs physical address**
+1. Usually not the same
+2. iova is the RDMA-visible address used in the MR
+3. hardware translation entries point to DMA addresses for the pages
+
+If an IOMMU is present:
+1. DMA address may differ from host physical address
+2. the NIC uses DMA addresses
+3. the driver programs DMA addresses into PAS or XLT
+
+If no IOMMU is present:
+1. DMA address may happen to equal physical address
+2. but conceptually it is still a DMA address space
+
+**What is stored in umem**
+
+The umem object keeps:
+1. original userspace start address
+2. length
+3. iova
+4. sg table after pin and DMA map
+
+See ib_umem.h:
+
+```c
+struct ib_umem {
+	struct ib_device       *ibdev;
+	struct mm_struct       *owning_mm;
+	u64 iova;
+	size_t			length;
+	unsigned long		address;
+	u32 writable : 1;
+	u32 is_odp : 1;
+	u32 is_dmabuf : 1;
+	struct sg_append_table sgt_append;
+};
+```
+
+That alone shows address and iova are separate fields.
+
+**In your current mlx5 reg_mr path**
+
+For the common non-special case:
+1. userspace addr and iova are usually equal
+2. umem->address and umem->iova often start equal
+3. the DMA addresses used in PAS or XLT are different values representing the pinned backing pages
+
+So the practical answer is:
+
+1. umem address:
+   userspace virtual base address
+
+2. iova:
+   MR-visible RDMA address base, often equal to user virtual base, but not inherently the same concept
+
+3. physical address:
+   backing page addresses, or more precisely DMA addresses after mapping, usually different from both
+
+**Most accurate one-line summary**
+
+In this mlx5 reg_mr flow, umem address and iova are often equal in the simple case, but they are logically different fields; neither should be assumed equal to the physical or DMA addresses programmed into PAS or XLT.
+
+If you want, I can draw one concrete example with numbers, for example:
+1. user virtual address
+2. iova
+3. two or three backing physical pages
+4. resulting DMA addresses
+5. final PAS or XLT entries

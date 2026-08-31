@@ -1,0 +1,181 @@
+# ubuntu-3fs
+
+# Docker to build an image of rockylinux 8 based
+# environment for 3FS.
+#
+
+ARG OS_VER="22.04"
+ARG OS_IMAGE="ubuntu"
+ARG BASE_DISTRO=${OS_IMAGE}:${OS_VER}
+
+#FROM ${OS_IMAGE}:${OS_VER}
+# Pull base image
+FROM $BASE_DISTRO as basic
+LABEL maintainer="michael.m.zhang@intel.com"
+# Needed for later use of BASE_DISTRO
+ENV BASE_DISTRO=${BASE_DISTRO}
+
+
+ARG DEBIAN_FRONTEND=noninteractive
+ARG BASE_PATH=/home
+ARG FIO_PATH=/home/fio
+ARG WORK_PATH=/home/3fs/
+ARG CODE_PATH=${WORK_PATH}/3fs/
+ARG BUILD_PRE=${WORK_PATH}/pre
+
+#SHELL ["/bin/bash", "-euo", "pipefail", "-c"]
+RUN apt-get update                                    &&\
+    apt-get install -y --no-install-recommends            \
+    git wget ca-certificates                              \
+    clang-format-14 clang-14 clang-tidy-14 lld-14         \
+    build-essential meson gcc-12 g++-12 cmake rustc cargo \
+    google-perftools                                      \
+    libaio-dev                                            \
+    libboost-all-dev                                      \
+    libdouble-conversion-dev                              \
+    libdwarf-dev                                          \
+    libgflags-dev                                         \
+    libgmock-dev                                          \
+    libgoogle-glog-dev                                    \
+    libgoogle-perftools-dev                               \
+    libgtest-dev                                          \
+    liblz4-dev                                            \
+    liblzma-dev                                           \
+    libssl-dev                                            \
+    libunwind-dev                                         \
+    git make gcc nvme-cli curl iproute2 inetutils-ping    \
+    libaio-dev libaio1  liburing-dev liburing2            \
+    wget pciutils bc zlib1g kmod jq pkg-config            \
+    cmake libuv1-dev liblz4-dev liblzma-dev libdouble-conversion-dev libdwarf-dev libunwind-dev \
+    libaio-dev libgflags-dev libgoogle-glog-dev libgtest-dev libgmock-dev clang-format-14 clang-14 clang-tidy-14 lld-14 \
+    libgoogle-perftools-dev google-perftools libssl-dev gcc-12 g++-12 libboost-all-dev \
+    ibutils rdma-core libibverbs1 ibverbs-providers ibverbs-utils librdmacm1 gpg vim nvme-cli \
+    libuv1-dev python3-pip                              && \
+    apt-get clean                                       && \
+    rm -rf /var/lib/apt/lists/*
+
+WORKDIR   ${BASE_PATH}
+
+# for x86
+ARG TARGETARCH="amd64"
+
+ARG FDB_VERSION=7.3.63
+ARG FDB_ARCH_SUFFIX
+RUN case "${TARGETARCH}" in \
+    amd64) FDB_ARCH_SUFFIX="amd64" ;; \
+    arm64) FDB_ARCH_SUFFIX="aarch64" ;; \
+    *) echo "Unsupported architecture: ${TARGETARCH}"; exit 1 ;; \
+    esac && \
+    FDB_CLIENT_URL="https://github.com/apple/foundationdb/releases/download/${FDB_VERSION}/foundationdb-clients_${FDB_VERSION}-1_${FDB_ARCH_SUFFIX}.deb" && \
+    FDB_SERVER_URL="https://github.com/apple/foundationdb/releases/download/${FDB_VERSION}/foundationdb-server_${FDB_VERSION}-1_${FDB_ARCH_SUFFIX}.deb" && \
+    wget -q "${FDB_CLIENT_URL}" && \
+    wget -q "${FDB_SERVER_URL}" && \
+    dpkg -i foundationdb-clients_${FDB_VERSION}-1_${FDB_ARCH_SUFFIX}.deb && \
+    dpkg -i foundationdb-server_${FDB_VERSION}-1_${FDB_ARCH_SUFFIX}.deb && \
+    rm foundationdb-clients_${FDB_VERSION}-1_${FDB_ARCH_SUFFIX}.deb foundationdb-server_${FDB_VERSION}-1_${FDB_ARCH_SUFFIX}.deb
+
+ARG LIBFUSE_VERSION=3.16.2
+ARG LIBFUSE_DOWNLOAD_URL=https://github.com/libfuse/libfuse/releases/download/fuse-${LIBFUSE_VERSION}/fuse-${LIBFUSE_VERSION}.tar.gz
+RUN wget -O- ${LIBFUSE_DOWNLOAD_URL}        |\
+  tar -xzvf - -C /tmp                      &&\
+  cd /tmp/fuse-${LIBFUSE_VERSION}          &&\
+  mkdir build && cd build                  &&\
+  meson setup .. && meson configure -D default_library=both &&\
+  ninja && ninja install &&\
+  rm -f -r /tmp/fuse-${LIBFUSE_VERSION}*
+
+# for RUSTup
+
+RUN apt autoremove rustc -y
+ENV RUSTUP_DIST_SERVER=https://mirrors.ustc.edu.cn/rust-static
+ENV RUSTUP_UPDATE_ROOT=https://mirrors.ustc.edu.cn/rust-static/rustup
+RUN curl --proto '=https' --tlsv1.2 https://sh.rustup.rs -sSf > rust_install.sh && RUSTUP_INIT_SKIP_PATH_CHECK=yes bash rust_install.sh -y
+#RUN curl --proto '=https' --tlsv1.2 https://sh.rustup.rs -sSf > rust_install.sh
+#RUN curl --proto '=https' --tlsv1.2 https://sh.rustup.rs -sSf |sh
+
+# WORKDIR ${WORK_PATH}
+WORKDIR   ${BASE_PATH}
+SHELL ["/bin/bash", "-euo", "pipefail", "-c"]
+
+# for lib_uring.
+RUN git clone https://github.com/axboe/liburing.git liburing && \
+    cd liburing/ && \
+    ./configure && \
+    make && make install 
+
+    #for 3fs
+ENV F3FS_VERSION="main"
+ENV F3FS_URL="https://github.com/deepseek-ai/3fs"
+#RUN cd ${BASE_PATH} && git clone https://github.com/deepseek-ai/3fs && \
+
+RUN cd ${BASE_PATH} && git clone -b "${F3FS_VERSION}" "${F3FS_URL}" 3fs && \
+    cd ${WORK_PATH} && \
+    git submodule update --init --recursive && \
+    ./patches/apply.sh && \
+    echo "build done"
+    # cmake -S . -B build -DCMAKE_CXX_COMPILER=clang++-14 -DCMAKE_C_COMPILER=clang-14 -DCMAKE_BUILD_TYPE=RelWithDebInfo -DCMAKE_EXPORT_COMPILE_COMMANDS=ON && \
+    # cmake --build build -j 32 && \
+
+#for FIO
+#WORKDIR   ${BASE_PATH}
+
+ARG FIO_VER="3.33"
+ARG FIO_REPO="https://github.com/axboe/fio.git"
+RUN cd ${BASE_PATH} && git clone -b "fio-${FIO_VER}" "${FIO_REPO}" fio && \
+    cd fio && \
+    ./configure && \
+    make && make install
+
+WORKDIR   ${BASE_PATH}
+
+#build 3fs stack
+RUN  cd ${WORK_PATH} && \
+    cmake -S . -B build \ 
+    -DCMAKE_CXX_COMPILER=clang++-14 \
+    -DCMAKE_C_COMPILER=clang-14 \
+    -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+    -DCMAKE_EXPORT_COMPILE_COMMANDS=ON && \
+    source /root/.cargo/env && \
+    cd ${WORK_PATH} && sed -i 's/version = 4/version = 4/g' ./Cargo.lock && \
+    cmake --build build -j 64 && strip ./build/bin/* && \
+    cp -r ./build/bin ./ && \
+    mkdir -p /opt/3fs/{bin,etc} && \
+    cp ${BASE_PATH}/3fs/build/bin/* /opt/3fs/bin/ && \
+    cp ${BASE_PATH}/3fs/configs/* /opt/3fs/etc/ && \
+    cp ${BASE_PATH}/3fs/deploy/README.md /opt/3fs/README.md && \
+    cp /etc/foundationdb/fdb.cluster /opt/3fs/etc/ && \
+    rm -rf ${BASE_PATH}/3fs/build && \
+    rm -rf ${BASE_PATH}/3fs/.git && \
+    rm -rf ${BASE_PATH}/3fs/target 
+#    echo "build done"
+
+#    cd ${WORK_PATH} && sed -i 's/version = 4/version = 3/g' ./Cargo.lock && \
+
+#RUN  source /root/.cargo/env && cd ${WORK_PATH} && sed -i 's/version = 4/version = 3/g' ./Cargo.lock && cmake --build build -j $(nproc)
+#RUN  cd ${WORK_PATH} &&  cmake --build build -j 32
+
+# for clickhouse
+RUN curl https://clickhouse.com/ | sh && ./clickhouse install -y
+
+#RUN  cd ${WORK_PATH} && sed -i 's/version = 4/version = 3/g' ./Cargo.lock cargo search cargo-build-sbf && cargo build-sbf -- -Znext-lockfile-bump && cmake --build build -j 
+#RUN  cd ${WORK_PATH} && sed -i 's/version = 4/version = 3/g' ./Cargo.lock && cmake --build build -j 
+
+RUN  pip install -r ${BASE_PATH}/3fs/deploy/data_placement/requirements.txt
+
+COPY /script/setup.sh  ${BASE_PATH}/
+COPY /script/ibdev2netdev ${BASE_PATH}/
+COPY /script/ibdev2netdev /usr/sbin/
+
+# COPY --from=basic ${BASE_PATH}/3fs/build/bin/ /opt/3fs/bin/
+# COPY --from=basic ${BASE_PATH}/3fs/configs/ /opt/3fs/etc/
+# COPY --from=basic ${BASE_PATH}/3fs/deploy/README.md /opt/3fs/README.md
+# COPY --from=basic /etc/foundationdb/fdb.cluster /opt/3fs/etc/
+
+# config PATH for 3fs bin.
+ENV PATH="/opt/3fs/bin:${PATH}"
+
+
+RUN  apt-get update && apt-get install -y xfsprogs libjemalloc-dev ntpdate && apt-get clean 
+RUN mkdir -p /var/log/3fs
+CMD /sbin/initctl && source "/root/.cargo/env" && service foundationdb start && sleep infinity
+#CMD source "/root/.cargo/env" && /sbin/initctl && /bin/bash

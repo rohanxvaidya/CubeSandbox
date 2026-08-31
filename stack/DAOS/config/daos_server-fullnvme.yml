@@ -1,0 +1,79 @@
+# DAOS Server configuration file
+
+name: daos_server
+#access_points: ['daos-server-157']
+#access_points: ['daos-server-71']
+access_points: ['daos-server-156']
+port: 10001
+
+provider: ofi+tcp;ofi_rxm
+socket_dir: /var/run/daos_server
+nr_hugepages: 4096
+
+transport_config:
+  allow_insecure: true
+
+helper_log_file: /tmp/daos_server_helper.log
+control_log_file: /tmp/daos_server.log
+control_log_mask: INFO
+#control_log_mask: DEBUG
+control_metadata:
+  path: /var/db/daos_server
+
+# env_vars:
+# - FI_LOG_LEVEL=warn
+# - FI_SOCKETS_MAX_CONN_RETRY=1
+# - FI_SOCKETS_CONN_TIMEOUT=2000
+# - D_LOG_MASK=DEBUG
+# - DD_SUBSYS=all
+# - DD_MASK=all
+# - HG_LOG_LEVEL=debug
+#
+#
+engines:
+  - pinned_numa_node: 0
+    targets: 6
+    nr_xs_helpers: 4
+    fabric_iface: "ens786f0np0"
+    fabric_iface_port: 31416
+    log_file: /tmp/daos_engine-0.log
+    log_mask: INFO
+    storage:
+      - class: ram
+        scm_mount: /mnt/daos0
+        scm_size: 96
+      - class: nvme
+        bdev_list: ['0000:65:00.0', '0000:66:00.0', '0000:67:00.0']
+        bdev_roles:
+          - data
+      - class: nvme
+        bdev_list: ['0000:68:00.0']
+        bdev_roles:
+          - meta
+          - wal
+
+  - pinned_numa_node: 1
+    targets: 6
+    nr_xs_helpers: 4
+    fabric_iface: "ens786f0np0"
+    fabric_iface_port: 32416
+    log_file: /tmp/daos_engine-1.log
+    log_mask: INFO
+    storage:
+      - class: ram
+        scm_mount: /mnt/daos1
+        scm_size: 96
+      - class: nvme
+        bdev_list: ['0000:e3:00.0', '0000:e4:00.0', '0000:e5:00.0']
+        bdev_roles:
+          - data
+      - class: nvme
+        bdev_list: ['0000:e6:00.0']
+        bdev_roles:
+          - meta
+          - wal
+
+
+
+
+

@@ -1,0 +1,341 @@
+From e44b6dec5ab0dd7373afe265a9404c6b8850c530 Mon Sep 17 00:00:00 2001
+From: "Michael.M.Zhang" <michael.m.zhang@intel.com>
+Date: Wed, 11 Feb 2026 03:42:23 -0500
+Subject: [PATCH 2/2] support interrupt + poll hybrid mode for nvme
+
+---
+ Makefile                |   4 +-
+ drivers/nvme/host/pci.c | 116 +++++++++++++++++++++++++++++++++++-----
+ scripts/mod/modpost.c   |   6 +--
+ 3 files changed, 107 insertions(+), 19 deletions(-)
+
+diff --git a/Makefile b/Makefile
+index 9642585ff..b10c5d52b 100644
+--- a/Makefile
++++ b/Makefile
+@@ -1,8 +1,8 @@
+ # SPDX-License-Identifier: GPL-2.0
+ VERSION = 5
+ PATCHLEVEL = 14
+-SUBLEVEL = 0
+-EXTRAVERSION =
++SUBLEVEL = 99
++EXTRAVERSION = -1001
+ NAME = Opossums on Parade
+ 
+ # DRM backport version
+diff --git a/drivers/nvme/host/pci.c b/drivers/nvme/host/pci.c
+index dc1c36db9..555d14c6a 100644
+--- a/drivers/nvme/host/pci.c
++++ b/drivers/nvme/host/pci.c
+@@ -45,7 +45,9 @@
+ #define NVME_MAX_SEGS	128
+ #define NVME_MAX_NR_ALLOCATIONS	5
+ 
+-static int use_threaded_interrupts;
++//static int use_threaded_interrupts;
++static int use_threaded_interrupts = 0;
++
+ module_param(use_threaded_interrupts, int, 0444);
+ 
+ static bool use_cmb_sqes = true;
+@@ -235,7 +237,15 @@ struct nvme_queue {
+ 	int ave_io_size;
+ 	int min_io_size;
+ 	ktime_t last_time; /* timestamp for last op */
++	int suppress_irq_count;
++	bool irq_suppressed;
++	bool irq_suppressed2;
++	 /* used for hybrid poll control: */
++	spinlock_t hybrid_poll_lock ____cacheline_aligned_in_smp;
+ };
++static int nvme_irq_suppress = 0;
++#define NVME_IRQ_SUPPRESS_COUNT		8
++//static int nvme_supress_rq = NVME_IRQ_SUPPRESS_COUNT;
+ 
+ union nvme_descriptor {
+ 	struct nvme_sgl_desc	*sg_list;
+@@ -360,7 +370,7 @@ static int nvme_get_bio_numa_node(struct request *req)
+             //         compound_order(page), compound_nr(page));
+ 
+             if (compound_nr(page) > 1) {
+-                dev_dbg(dev->dev, "WARNING: Compound page has %d subpages, may span multiple NUMA nodes\n",
++                dev_dbg(dev->dev, "WARNING: Compound page has %ld subpages, may span multiple NUMA nodes\n",
+                         compound_nr(page));
+             }
+ 
+@@ -391,9 +401,9 @@ static int nvme_get_bio_numa_node(struct request *req)
+ static bool nvme_should_optimize_numa(struct nvme_dev *dev, struct request *req,
+ 									 int dev_numa_node)
+ {
+-	struct bio *bio = req->bio;
++	//struct bio *bio = req->bio;
+     size_t io_size = blk_rq_bytes(req);
+-	struct nvme_iod *iod = blk_mq_rq_to_pdu(req);
++//	struct nvme_iod *iod = blk_mq_rq_to_pdu(req);
+ 
+ 	if (!numa_opt_enabled)
+ 		return false;
+@@ -419,7 +429,8 @@ static bool nvme_should_optimize_numa(struct nvme_dev *dev, struct request *req,
+ 
+ 	return true;
+ }
+-
++#define NUMA_OPT_DEBUG	0
++#if NUMA_OPT_DEBUG
+ // verify DMA mapped NUMA node
+ static void debug_dma_numa_info(struct nvme_dev *dev, struct request *req)
+ {
+@@ -474,7 +485,7 @@ static void debug_dma_numa_info(struct nvme_dev *dev, struct request *req)
+ 	dev_info(dev->dev, "--- final confirm sg data ---\n");
+ 	nvme_print_sgl(iod->sgt.sgl, iod->sgt.nents);
+ }
+-
++#endif
+ 
+ // // nvme_map_data for numa opt.
+ // static blk_status_t nvme_numa_opt_map_data(struct nvme_dev *dev, struct request *req,
+@@ -528,7 +539,7 @@ static blk_status_t nvme_setup_numa_optimization(struct nvme_dev *dev,
+                                                 int dev_numa_node)
+ {
+ 	struct nvme_iod *iod = blk_mq_rq_to_pdu(req);
+-	struct bio *bio = req->bio;
++	//struct bio *bio = req->bio;
+     size_t io_size = blk_rq_bytes(req);
+     gfp_t gfp_mask = GFP_ATOMIC | __GFP_THISNODE;
+ 	blk_status_t ret;
+@@ -553,7 +564,7 @@ static blk_status_t nvme_setup_numa_optimization(struct nvme_dev *dev,
+ 		iod->numa_opt.enabled = false;
+ 		return BLK_STS_RESOURCE;
+     }
+-    
++
+     // 3. Mapp the local NUMA buffer DMA.
+ 
+     // 
+@@ -1304,7 +1315,9 @@ static blk_status_t nvme_map_data(struct nvme_dev *dev, struct request *req,
+     // nvme NUMA opt
+ 	int dev_numa_node = dev_to_node(dev->dev);
+     if (nvme_should_optimize_numa(dev, req, dev_numa_node)) {
+-        return nvme_setup_numa_optimization(dev, req, cmnd, dev_numa_node);
++        ret = nvme_setup_numa_optimization(dev, req, cmnd, dev_numa_node);
++		if (ret == BLK_STS_OK)
++			return ret;
+     } else {
+ 		if (numa_opt_enabled)
+ 			dev_dbg(dev->dev, "%s: Didn't enable opt numa...\n", __FUNCTION__);
+@@ -1421,7 +1434,7 @@ static int nvme_set_irq_coalesce(struct nvme_ctrl *ctrl, u32 v)
+ #define CHECK_INTERVAL                  0x7	/* check interval */
+ #define PRINT_INTERVAL                  0x3FF	/* print interval in debug mode */
+ 
+-static int disable = 0;
++static int disable = 1;
+ static int debug = 0;
+ static int switch_cnt = 0;
+ static int hit_count_before_change = HIT_COUNT_BEFORE_CHANGE_DEFAULT;
+@@ -1570,6 +1583,19 @@ static ssize_t numa_opt_nocopy_store(struct kobject *kobj, struct kobj_attribute
+ 	return ret ?: count;
+ }
+ 
++static ssize_t nvme_irq_suppress_show(struct kobject *kobj, struct kobj_attribute *attr, char *buf) {
++	return sprintf(buf, "%d\n", nvme_irq_suppress);
++}
++
++static ssize_t nvme_irq_suppress_store(struct kobject *kobj, struct kobj_attribute *attr, const char *buf, size_t count) {
++	int v = 0;
++	int ret = kstrtoint(buf, 10, &v);
++	if(0<=v && v<100000)
++		nvme_irq_suppress = v;
++	return ret ?: count;
++
++}
++
+ static struct kobj_attribute disable_attr = __ATTR(disable, 0644, disable_show, disable_store);
+ static struct kobj_attribute debug_attr = __ATTR(debug, 0644, debug_show, debug_store);
+ static struct kobj_attribute switch_cnt_attr = __ATTR(switch_cnt, 0644, switch_cnt_show, switch_cnt_store);
+@@ -1581,6 +1607,7 @@ static struct kobj_attribute min_completed_threshold_attr = __ATTR(min_completed
+ static struct kobj_attribute min_running_queues_attr = __ATTR(min_running_queues, 0644, min_running_queues_show, min_running_queues_store);
+ static struct kobj_attribute numa_opt_enabled_attr = __ATTR(numa_opt_enabled, 0644, numa_opt_enabled_show, numa_opt_enabled_store);
+ static struct kobj_attribute numa_opt_nocopy_attr = __ATTR(numa_opt_nocopy, 0644, numa_opt_nocopy_show, numa_opt_nocopy_store);
++static struct kobj_attribute nvme_irq_suppress_attr = __ATTR(nvme_irq_suppress, 0644, nvme_irq_suppress_show, nvme_irq_suppress_store);
+ 
+ 
+ /* in 5.10, nvme_queue_rq is inside lock-unlock section, so cannot call nvme_set_irq_coalesce directly, do this in a dedicated thread */
+@@ -1845,6 +1872,7 @@ static inline void adjust_coalesce(struct nvme_queue *nvmeq, struct request *req
+ static void nvme_submit_cmds(struct nvme_queue *nvmeq, struct rq_list *rqlist)
+ {
+ 	struct request *req;
++	struct pci_dev *pdev = to_pci_dev(nvmeq->dev->dev);
+ 
+ 	if (rq_list_empty(rqlist))
+ 		return;
+@@ -1870,6 +1898,38 @@ static void nvme_submit_cmds(struct nvme_queue *nvmeq, struct rq_list *rqlist)
+ 		// 	debug_dma_numa_info(dev, req);
+ 		// }
+ 	}
++#if 1
++	if (nvme_irq_suppress && nvmeq) {
++		if (nvmeq->suppress_irq_count-- <= 0) {
++			pr_debug("irq_count = %d, set back to %d, Enable IRQ!\n", nvmeq->suppress_irq_count, nvme_irq_suppress);
++			
++//			spin_lock(&nvmeq->hybrid_poll_lock);
++//			nvmeq->suppress_irq_count = NVME_IRQ_SUPPRESS_COUNT;
++			nvmeq->suppress_irq_count = nvme_irq_suppress;
++			// enable irq;
++			if(nvmeq->irq_suppressed) {
++				spin_lock(&nvmeq->hybrid_poll_lock);
++				nvmeq->irq_suppressed = 0;
++				enable_irq(pci_irq_vector(pdev, nvmeq->cq_vector));
++				spin_unlock(&nvmeq->hybrid_poll_lock);
++			}
++		} else {
++			// disable irq
++			if(nvmeq->irq_suppressed == 0) {
++				spin_lock(&nvmeq->hybrid_poll_lock);
++				nvmeq->irq_suppressed = 1;
++				disable_irq(pci_irq_vector(pdev, nvmeq->cq_vector));
++				spin_unlock(&nvmeq->hybrid_poll_lock);
++			}
++		}
++	} else {
++		if (nvmeq->irq_suppressed) {
++			nvmeq->irq_suppressed = 0;
++			enable_irq(pci_irq_vector(pdev, nvmeq->cq_vector));
++		}
++	}
++#endif
++
+ 	nvme_write_sq_db(nvmeq, true);
+ 	spin_unlock(&nvmeq->sq_lock);
+ }
+@@ -1888,6 +1948,7 @@ static bool nvme_prep_rq_batch(struct nvme_queue *nvmeq, struct request *req)
+ 	return nvme_prep_rq(nvmeq->dev, req) == BLK_STS_OK;
+ }
+ 
++static uint64_t nvme_q_rqs_list = 0;
+ static void nvme_queue_rqs(struct rq_list *rqlist)
+ {
+ 	struct rq_list submit_list = { };
+@@ -1895,16 +1956,20 @@ static void nvme_queue_rqs(struct rq_list *rqlist)
+ 	struct nvme_queue *nvmeq = NULL;
+ 	struct request *req;
+ 
++	nvme_q_rqs_list = 0;
++
+ 	while ((req = rq_list_pop(rqlist))) {
+ 		if (nvmeq && nvmeq != req->mq_hctx->driver_data)
+ 			nvme_submit_cmds(nvmeq, &submit_list);
+ 		nvmeq = req->mq_hctx->driver_data;
+ 
+-		if (nvme_prep_rq_batch(nvmeq, req))
++		if (nvme_prep_rq_batch(nvmeq, req)) {
+ 			rq_list_add_tail(&submit_list, req);
+-		else
++			nvme_q_rqs_list++;
++		}else
+ 			rq_list_add_tail(&requeue_list, req);
+ 	}
++	pr_debug("Entry %s Current list count = %lld, in this submit\n", __FUNCTION__, nvme_q_rqs_list);
+ 
+ 	if (nvmeq)
+ 		nvme_submit_cmds(nvmeq, &submit_list);
+@@ -2056,12 +2121,12 @@ static inline void nvme_update_cq_head(struct nvme_queue *nvmeq)
+ 		nvmeq->cq_head = tmp;
+ 	}
+ }
+-
++static uint64_t nvme_poll_count = 0;
+ static inline bool nvme_poll_cq(struct nvme_queue *nvmeq,
+ 			        struct io_comp_batch *iob)
+ {
+ 	bool found = false;
+-
++	nvme_poll_count = 0;
+ 	while (nvme_cqe_pending(nvmeq)) {
+ 		found = true;
+ 		/*
+@@ -2070,11 +2135,15 @@ static inline bool nvme_poll_cq(struct nvme_queue *nvmeq,
+ 		 */
+ 		dma_rmb();
+ 		nvme_handle_cqe(nvmeq, iob, nvmeq->cq_head);
++		nvme_poll_count++;
+ 		nvme_update_cq_head(nvmeq);
+ 	}
+ 
+ 	if (found)
+ 		nvme_ring_cq_doorbell(nvmeq);
++
++	pr_debug("Entry %s Current poll count = %lld, in this interrupt\n", __FUNCTION__, nvme_poll_count);
++	
+ 	return found;
+ }
+ 
+@@ -2086,6 +2155,17 @@ static irqreturn_t nvme_irq(int irq, void *data)
+ 	if (nvme_poll_cq(nvmeq, &iob)) {
+ 		if (!rq_list_empty(&iob.req_list))
+ 			nvme_pci_complete_batch(&iob);
++
++		// Do it only for threaded irq.
++		if(use_threaded_interrupts && nvme_irq_suppress && nvmeq->irq_suppressed) {
++			struct pci_dev *pdev = to_pci_dev(nvmeq->dev->dev);
++			spin_lock(&nvmeq->hybrid_poll_lock);
++			nvmeq->irq_suppressed = 0;
++			nvmeq->suppress_irq_count = nvme_irq_suppress;
++			enable_irq(pci_irq_vector(pdev, nvmeq->cq_vector));
++			spin_unlock(&nvmeq->hybrid_poll_lock);
++		}
++
+ 		return IRQ_HANDLED;
+ 	}
+ 	return IRQ_NONE;
+@@ -2608,6 +2688,8 @@ static int nvme_alloc_queue(struct nvme_dev *dev, int qid, int depth)
+ 	nvmeq->min_io_size = 131072;
+ 	nvmeq->ave_io_size = 0;
+ 	dev->ctrl.queue_count++;
++	nvmeq->suppress_irq_count = NVME_IRQ_SUPPRESS_COUNT;
++	nvmeq->irq_suppressed = 0;
+ 
+ 	return 0;
+ 
+@@ -4743,6 +4825,11 @@ static int __init nvme_init(void)
+ 	if (ret)
+ 		pr_err("Failed to create sysfs file: numa_opt_nocopy\n");
+ 
++	ret = sysfs_create_file(nvme_kobj, &nvme_irq_suppress_attr.attr);
++	if (ret)
++		pr_err("Failed to create sysfs file: nvme_irq_suppress\n");
++
++
+ 	coalesce_thread = kthread_run(coalesce_thread_function, NULL, "coalesce_thread");
+ 	if (IS_ERR(coalesce_thread)) {
+ 		pr_err(KERN_ERR "Failed to create nvme irq coalesce thread\n");
+@@ -4781,6 +4868,7 @@ static void __exit nvme_exit(void)
+ 	sysfs_remove_file(nvme_kobj, &min_running_queues_attr.attr);
+ 	sysfs_remove_file(nvme_kobj, &numa_opt_enabled_attr.attr);
+ 	sysfs_remove_file(nvme_kobj, &numa_opt_nocopy_attr.attr);
++	sysfs_remove_file(nvme_kobj, &nvme_irq_suppress_attr.attr);
+ 	kobject_put(nvme_kobj);
+ }
+ 
+diff --git a/scripts/mod/modpost.c b/scripts/mod/modpost.c
+index 5cfac258c..b6f38b544 100644
+--- a/scripts/mod/modpost.c
++++ b/scripts/mod/modpost.c
+@@ -1967,11 +1967,11 @@ static void write_buf(struct buffer *b, const char *fname)
+ 		exit(1);
+ 	}
+ }
+-
++#define RHEL_MAJOR 	9
++#define RHEL_MINOR	1
+ static void add_rhelversion(struct buffer *b, struct module *mod)
+ {
+-	buf_printf(b, "MODULE_INFO(rhelversion, \"%d.%d\");\n", RHEL_MAJOR,
+-		   RHEL_MINOR);
++	buf_printf(b, "MODULE_INFO(rhelversion, \"%d.%d\");\n", RHEL_MAJOR,   RHEL_MINOR);
+ }
+ 
+ static void write_if_changed(struct buffer *b, const char *fname)
+-- 
+2.47.3
+

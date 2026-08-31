@@ -1,0 +1,63 @@
+# ubuntu-kernel
+# docker build -t ubuntu-qemu-cxl -f Dockerfile.ubuntu_qemu_cxl . --build-arg https_proxy=$https_proxy --build-arg http_proxy=$http_proxy --build-arg no_proxy=$no_proxy
+
+ARG OS_VER="24.04"
+ARG OS_IMAGE="ubuntu"
+ARG BASE_DISTRO=${OS_IMAGE}:${OS_VER}
+# Pull base image
+FROM $BASE_DISTRO as basic
+ARG DEBIAN_FRONTEND=noninteractive
+
+ENV  BASE_PATH=/opt
+ENV  WORK_PATH=${BASE_PATH}/kernel
+ENV  LOG_PATH=${BASE_PATH}/logs
+
+LABEL maintainer="michael.m.zhang@intel.com"
+# Needed for later use of BASE_DISTRO
+ENV BASE_DISTRO=${BASE_DISTRO}
+
+RUN apt-get update && \
+    apt-get install -y libncurses-dev pkg-config build-essential flex bison elfutils libelf-dev libssl-dev && \
+    apt-get install -y git make gcc nvme-cli curl iproute2 inetutils-ping \
+    libaio-dev  liburing-dev liburing2 wget pciutils bc zlib1g kmod jq pkg-config \
+    pipx python3-venv libnfs-dev libseccomp-dev libcap-ng-dev libxkbcommon-dev libslirp-dev \
+    libpmem-dev numactl libvirt-dev libaio-dev libaio1t64 ninja-build sphinx python3-sphinx \
+    bzip2 python3-pip vim net-tools libglib2.0-dev libpixman-1-dev sudo cpio zstd libtool initramfs-tools
+
+# # for build kernel
+# RUN apt-get install -y libncurses-dev pkg-config build-essential flex bison elfutils libelf-dev libssl-dev
+
+# for ubuntu-23.10
+#RUN rm /usr/lib/python3.11/EXTERNALLY-MANAGED
+# for ubuntu-24.04
+RUN rm /usr/lib/python3.12/EXTERNALLY-MANAGED
+RUN python3 -m pip install sphinx_rtd_theme
+
+WORKDIR   ${WORK_PATH}
+
+ARG LINUX_REPO="https://github.com/torvalds/linux.git"
+ARG LINUX_VER="6.8"
+
+#RUN cd ${WORK_PATH}/ && git clone -b ${LINUX_VER} "v${LINUX_REPO}" kernel
+
+ARG LINUX_LINK="https://github.com/torvalds/linux/archive/refs/tags/v${LINUX_VER}.tar.gz"
+RUN cd ${WORK_PATH}/ && wget ${LINUX_LINK}
+
+COPY /config  ${WORK_PATH}/config
+COPY build.sh ${WORK_PATH}/
+#RUN cd ${WORK_PATH}/kernel && cp ${WORK_PATH}/config/config-6.6.0-srf.bkc.6.6.28.1.30.x86_64 .config && \
+#    make -j all && \
+#    make modules
+
+#scripts/config --disable SYSTEM_TRUSTED_KEYS
+#scripts/config --disable SYSTEM_REVOCATION_KEYS
+
+# RUN cd ${WORK_PATH}/kernel && cp ${WORK_PATH}/config/config-6.6.0-srf.bkc.6.6.28.1.30.x86_64 .config && \
+#     make -j all && \
+#     make modules
+
+RUN export http_proxy=http://child-prc.intel.com:913/
+RUN export https_proxy=http://child-prc.intel.com:913/
+
+
+

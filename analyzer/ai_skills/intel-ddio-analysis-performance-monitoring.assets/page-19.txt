@@ -1,0 +1,59 @@
+
+Time interval for PMON metrics non-allocating +
+
+= 41 second 2048 queues 2048 queues Comment
+UNC_ll0_DATA_REQ_OF_CPU 11,153,407,851
+MEM_WRITE.PARTO 9,084,104,796
+UNC_CHA_TOR_INSERTS.I0 Non-allocating flows end the write
+_CLFLUSH - 570,128,486 flow with a WBMTOI operation
+instead of a CLFLUSH operation.
+This change directs inbound write
+UNC_CHA_TOR_INSERTS.10 data to system memory rather than
+_WBMTOI 657,470,490 21g the LLC.
+L2 Miss Latency, ns When allocating inbound write flow
+82 133 is disabled, the core fetches the
+packet data from memory instead of
+LLC. This results in an increase in
+read latency.
+metric_memory bandwidth read (MB/sec) Additionally, disabling allocating
+74,584 76,602 flows results in increased utilization
+of write memory bandwidth.
+metric_memory bandwidth write (MB/sec)
+35,209 44,930
+metric_memory bandwidth total (MB/sec)
+107,462 121,531
+
+Table 8: Performance Analysis of iperf Workload with Allocating and Non-Allocating Inbound IO Writes Using Intel PMON Metrics.
+
+6 Tools
+
+6.1 Intel® VTune™ Profiler
+
+The Intel® VTune™ Profiler is a performance monitoring tool that supports Windows and Linux Operating Systems and has built-in analytics
+to help abstract the raw performance monitoring event details to a metric level. VTune™ can be obtained at the Intel "Profiler
+ite [4]
+
+Information on the Intel® DDIO analysis offered by VTune™ is documented in the Intel® VTune™ Profiler Performance Analysis Cookbook
+article “Effe U f hnology’T5].
+
+6.2 Linux Perf
+
+Linux perf is a well-known and powerful tool for performance analysis. Support for IO performance metrics has been added to Linux perf
+and can be accessed using the perf metrics flag, as shown below, The PMON events used to calculate the metric are also displayed.
+
+   
+
+ 
+
+   
+
+  
+
+    
+
+    
+
+io_bandwidth write -a sle:
+
+https:/Avww.intel,com/contentiwww/us/en/developer/articles/technical/ddio-analysis-performance-monitoring.html 19/22
+

@@ -1,0 +1,39 @@
+
+1 Introduction
+
+Intel® Data Direct I/O Technology (Intel® DDIO) is available in current Intel® Xeon® processors. It enables 1/O devices such as network
+interface controllers (NICs), disk controllers, and other peripherals to access the CPU's last-level cache (LLC). Direct access to LLC can
+drastically increase performance due to lower latencies, CPU utilization, and higher bandwidth.
+
+The Intel® DDIO feature is transparent to software, meaning that software does not need to be modified to utilize it. Since the software is
+unaware of Intel® DDIO, how can one determine if and how effectively it is being used, and how can it be optimized to improve 1/0
+performance?
+
+This paper details how to use the available set of Intel Performance Monitoring (PerfMon) events and metrics to determine if and how
+effectively Intel® DDIO technology is being used. It will cover suggestions on how to improve the utilization of Intel® DDIO.
+
+This paper's content is specific to 4th Generation Intel® Xeon® Scalable Processors (formerly known as Sapphire Rapids) and Sth
+Generation Intel® Xeon® Scalable Processors (formerly known as Emerald Rapids); however, many of the concepts apply to previous
+Intel® Xeon@ class processor generations.
+
+This paper does not cover the details of how to program uncore PerfMon events; please see the 4"" Gen Intel® Xeon® Scalable Processor
+XCC Uncore Perf Guide [1] for this programming information. This paper does not cover cross-socket 1/O
+flows; all flows discussed illustrate local traffic on one socket.
+
+     
+
+The PerfMon events referenced in this paper can be found in JSON format at the Intel® performance monitoring GitHub [2] in the SPR
+directory. ~ ~
+
+2 Architecture Background
+
+2.1 4" Generation Intel® Xeon® Scalable Processors Platform Overview
+
+While other documents provide a platform and architecture overview with a similar picture, to establish common ground, we will start with a
+high-level overview of the 4th Generation Intel® Xeon® Scalable Processors in the figure below, 4th Generation Intel® Xeon® Scalable
+Processors, like previous Intel® Xeon® Scalable Servers, implements a tile layout where various blocks are grouped onto tiles and placed in
+Grid vertices. These grid vertices connect to a mesh interconnect, allowing blocks to be interconnected through a common mesh fabric. The
+tile layout is SKU-specific; the figure below represents one possible layout or SKU,
+
+https:/Awww.intel.com/content/www/us/en/developer/articles/technical/ddio-analysis-performance-monitoring.html 122
+

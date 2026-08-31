@@ -1,0 +1,134 @@
+
+ 
+
+Discrete IO device or built-in
+SOC accelerator
+
+UPI Link
+V PN 0
+
+\
+
+4 spr >
+
+we ,
+=
+
+4%
+44
+
+ 
+
+ 
+
+ 
+
+ 
+
+ 
+
+ 
+
+ 
+
+ 
+
+Remote Socket
+
+3
+%
+3
+244
+aS 3 Snoops
+3 , Inbound Request
+Core A % g o NA
+
+jenie Response
+Nd
+
+ 
+
+ 
+
+ 
+
+Potential follow up
+operations by CHA
+
+ 
+
+ 
+
+ 
+
+\
+y \ ' Local
+
+Core ~e L -snoops
+CHAVLLC »
+
+~ Core
+CHA/LLE
+
+ 
+
+ 
+
+ 
+
+ 
+
+ 
+
+ 
+
+ 
+
+ 
+
+Writebacks
+
+ 
+
+ 
+
+DDRs i Ie
+
+ 
+
+ 
+
+ 
+
+ 
+
+ 
+
+Figure 4: Inbound Write Transaction Diagram. Inbound Writes Consist of Ownership Phase (1-2) and Writeback Phase (3).
+
+2.2.1.2 Inbound Write LLC Hit
+
+LLC hit is the most desirable outcome of an inbound write as it typically results in the lowest overhead the CPU has to incur to service the
+write, In the event of an LLC hit the CHA simply updates the cache line in the LLC. For full cache line transactions, the entire cache line is
+overwritten with the new data; for partial cache line transactions, the cache line is merged inside the CHA.
+
+While LLC hit is the simplest outcome of the inbound write, if copies of the data were also found in other caching agents, such as cores or a
+cache in another CPU socket, a snoop operation is required to invalidate the data from these caching agents to maintain coherence,
+2.2.1.3 Inbound Write LLC Miss
+
+In case of an LLC miss, a copy of the data may be present in another cache, such as another core’s local caches or another CPU socket LLC.
+While processing LLC miss, the CHA determines the location of the data by various means, such as checking the snoop filter, then proceeds
+to snoop the data if needed. Once these coherency operations have been completed, if the write operation is allocating, the CHA allocates
+the new data in its LLC. Allocating writes are the most common inbound I/O write scenario; see section 2.3.1.4 for non-allocating writes.
+
+‘As with other cache allocations, if the LLC has no available cache line slots (invalid lines) to allocate the new inbound 1/O write data, the
+CHA makes room by evicting older data to memory. In case the victimized cache line was dirty, the eviction will result in a memory write
+and other coherence operations if necessary.
+
+Similar to an inbound LLC hit, if the inbound write is partial, the data is merged with a previous copy of the data. In this case, the previous
+copy of the data is fetched from memory or another cache.
+
+2.2.1.4 Non-Allocating Inbound Writes
+
+https:/Avww.intel,com/contentiwww/us/en/developer/articles/technical/ddio-analysis-performance-monitoring.html 6122
+

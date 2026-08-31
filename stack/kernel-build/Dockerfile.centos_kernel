@@ -1,0 +1,55 @@
+# ubuntu-kernel
+# docker build -t ubuntu-qemu-cxl -f Dockerfile.ubuntu_qemu_cxl . --build-arg https_proxy=$https_proxy --build-arg http_proxy=$http_proxy --build-arg no_proxy=$no_proxy
+
+# Pull base image
+ARG OS_VER=8
+ARG OS_IMAGE=rockylinux/rockylinux
+ARG BASE_DISTRO=${OS_IMAGE}:${OS_VER}
+FROM $BASE_DISTRO as basic
+
+ENV  BASE_PATH=/opt
+ENV  WORK_PATH=${BASE_PATH}/kernel
+ENV  LOG_PATH=${BASE_PATH}/logs
+
+LABEL maintainer="michael.m.zhang@intel.com"
+# Needed for later use of BASE_DISTRO
+ENV BASE_DISTRO=${BASE_DISTRO}
+
+RUN dnf update -y && dnf group install -y "Development Tools" && \ 
+    dnf install -y openssh-server openssh-clients passwd net-tools \
+    golang pixman pixman-devel zlib zlib-devel python3  \
+    bzip2 bzip2-devel acpica-tools pkgconf-pkg-config libaio libaio-devel \
+    liburing libzstd libzstd-devel libgudev wget vim dnf-plugins-core && \
+    dnf install -y gcc make ncurses-devel flex bison openssl openssl-devel elfutils-libelf-devel binutils binutils-devel perl bc && dnf clean all 
+RUN dnf config-manager --set-enabled powertools
+
+# install dwarves
+
+WORKDIR   ${WORK_PATH}
+
+ARG LINUX_REPO="https://github.com/torvalds/linux.git"
+ARG LINUX_VER="6.8"
+
+#RUN cd ${WORK_PATH}/ && git clone -b ${LINUX_VER} "v${LINUX_REPO}" kernel
+
+ARG LINUX_LINK="https://github.com/torvalds/linux/archive/refs/tags/v${LINUX_VER}.tar.gz"
+RUN cd ${WORK_PATH}/ && wget ${LINUX_LINK}
+
+COPY /config  ${WORK_PATH}/config
+COPY build.sh ${WORK_PATH}/
+#RUN cd ${WORK_PATH}/kernel && cp ${WORK_PATH}/config/config-6.6.0-srf.bkc.6.6.28.1.30.x86_64 .config && \
+#    make -j all && \
+#    make modules
+
+#scripts/config --disable SYSTEM_TRUSTED_KEYS
+#scripts/config --disable SYSTEM_REVOCATION_KEYS
+
+# RUN cd ${WORK_PATH}/kernel && cp ${WORK_PATH}/config/config-6.6.0-srf.bkc.6.6.28.1.30.x86_64 .config && \
+#     make -j all && \
+#     make modules
+
+RUN export http_proxy=http://child-prc.intel.com:913/
+RUN export https_proxy=http://child-prc.intel.com:913/
+
+
+

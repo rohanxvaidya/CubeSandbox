@@ -1,0 +1,68 @@
+4112126, 6:14 AM Intel® Data Direct I/O Technology Performance Monitoring
+© IO: the integrated 1/0 inbound and outbound traffic controllers (ITC/OTC)
+© I: short for IRP, the I1O to ring port or 1/0 cache tracker
+
+M2M: the mesh to memory unit
+
+M2P: short for M2PCIe, the mesh to PCIe unit
+
+MBUPT: the interface between the mesh and the Intel® UPI Link Layer
+
+MDF: bridges multiple dies with an embedded bridge system
+short for PCU, the power control unit
+
+U: short for UBOX, the system configuration controller
+
+UPI: the Intel® UPI Link Layer unit
+
+: short for IMC, the integrated memory controller
+
+  
+
+ 
+
+The remainder of the event name briefly describes what this event ID counts. There is often a period in the name which usually indicates
+that several events share the same event ID but use different umask values. For example, the event name “UNC_M_CAS_COUNT.RD” tells
+us this is an uncore event, counting in the integrated memory controller and is counting CAS commands that are read transactions.
+
+Note that the events defined in the "4" Gen Intel® Xeon® Scalable Processor Uncore Performance Monitoring Programming Guide” [1] do
+not contain this leading UNC and unit acronym in front of
+
+  
+
+2.3.4 Understanding 110 Event Parts
+
+While on the topic of event naming conventions, it is worth calling out the set of I10 events that end with “.partn’” where nis a number
+between 0 to 7, for example “UNC_IIO_DATA_REQ_OF_CPU.MEM_WRITE.PARTO”. The M2IOSF can support up to two IOSF ports, and
+these “part” events allow us to monitor various PCIE bifurcation configurations across the two ports, up to a x4 PCIE lane resolution. Parts
+0-3 map to the first x16 port, and parts 4-7 map to the second x16 port. For example, if the first port is connected to a 4x4 configuration
+and traffic is being sent on all 4 links then events for parts 0-3 will increment accordingly. It is common for only one port to be connected.
+In this case, the parts connected to the non-operational port will return a count of zero.
+
+The following picture shows how these parts map to possible bifurcations of a x16 PCTe link.
+
+Mesh
+
+iT
+
+M210SF
+
+ 
+
+ 
+
+ 
+
+ 
+
+ 
+
+ 
+
+Figure 5: PCIE Parts Mapping
+
+If you monitor a PCIE x16 device, you can expect event counts to show on event PARTO (or PARTS if the slot is connected to the second
+port). In a 2x8 configuration, counts will show on PARTO and PART2.
+
+https:/Avww.intel,com/contentiwww/us/en/developer/articles/technical/ddio-analysis-performance-monitoring.html 8122
+

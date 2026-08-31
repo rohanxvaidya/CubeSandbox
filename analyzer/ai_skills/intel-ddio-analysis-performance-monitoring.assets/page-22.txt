@@ -1,0 +1,77 @@
+4/12/26, 6:14 AM
+
+Date
+
+Intel Turbo Boost
+
+Base Frequency
+
+All-core Maximum Frequency
+
+Maximum Frequency
+
+NUMA Nodes
+
+Installed Memory
+
+Hugepagesize
+
+Transparent Huge Pages
+
+Automatic NUMA Balancing
+
+NIC
+
+Disk
+
+BIOS
+
+Microcode
+
+os
+
+Kernel
+
+TOP
+
+Power & Perf Policy
+
+Intel® Data Direct VO Technology Performance Monitoring
+12/15/2023
+
+Enabled
+
+1.9GHz
+
+2.9GHz
+
+1.9GHz
+
+512GB (16x32GB DDRS5 4800 MT/s [4800 MT/s])
+
+2048 kB
+
+madvise
+
+Disabled
+
+2x MT2910 Family [ConnectX-7]
+
+1x 223.6G INTEL SSDSC2KB240G8, 1x 240M UDisk
+
+0x21000161
+
+Ubuntu 22.04 LTS
+
+5.15.0-27-generic
+
+350 watts
+
+Normal (6)
+
+Table 9: System Configuration for the IPerf DDIO Example
+
+https:/Avww.intel,com/content/www/us/en/developer/articles/technical/ddio-analysis-performance-monitoring.html
+
+2222
+

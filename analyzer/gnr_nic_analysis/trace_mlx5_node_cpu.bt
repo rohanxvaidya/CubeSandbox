@@ -1,0 +1,75 @@
+#!/usr/bin/env bpftrace
+
+BEGIN
+{
+    printf("[mlx5_node_cpu] start\n");
+}
+
+/*
+ * mlx5e_open_rxq_rq is not traceable on this kernel build.
+ * Use mlx5e_open_queues for entry context and mlx5e_open_rq for node + rq->channel->cpu.
+ */
+kprobe:mlx5e_open_queues
+{
+    $c = (struct mlx5e_channel *)arg0;
+    $ccpu = $c->cpu;
+
+    @channel_cpu_by_tid[tid] = $ccpu;
+
+    printf("OPEN_QUEUES pid=%d tid=%d comm=%s c=0x%lx c_cpu=%d\n",
+           pid, tid, comm, (uint64)$c, $ccpu);
+}
+
+/*
+ * int mlx5e_open_rq(..., int node, struct mlx5e_rq *rq)
+ *   arg3 = node
+ */
+kprobe:mlx5e_open_rq
+{
+    $node = (int32)arg3;
+    $rq = (struct mlx5e_rq *)arg4;
+    $rq_ptr = (uint64)$rq;
+    $ccpu_from_rq = $rq->channel->cpu;
+    $ccpu_from_open_queues = @channel_cpu_by_tid[tid];
+
+    printf("OPEN_RQ pid=%d tid=%d comm=%s node=%d rq=0x%lx c_cpu_from_rq_channel=%d c_cpu_from_open_queues=%d\n",
+           pid, tid, comm, $node, $rq_ptr, $ccpu_from_rq, $ccpu_from_open_queues);
+}
+
+/*
+ * static struct cpumask *mlx5_comp_irq_get_affinity_mask(struct mlx5_core_dev *dev, int vector)
+ *   arg1 = vector, retval = struct cpumask *mask
+ */
+kprobe:mlx5_comp_irq_get_affinity_mask
+{
+    @comp_vec_by_tid[tid] = (int32)arg1;
+}
+
+kretprobe:mlx5_comp_irq_get_affinity_mask
+/@comp_vec_by_tid[tid]/
+{
+    $vec = @comp_vec_by_tid[tid];
+    $mask = (struct cpumask *)retval;
+
+    if ((uint64)$mask) {
+        printf("COMP_IRQ_AFF_MASK pid=%d tid=%d comm=%s vector=%d mask=0x%lx bits0=0x%lx bits1=0x%lx\n",
+               pid, tid, comm, $vec, (uint64)$mask,
+               $mask->bits[0], $mask->bits[1]);
+    } else {
+        printf("COMP_IRQ_AFF_MASK pid=%d tid=%d comm=%s vector=%d mask=0x0\n",
+               pid, tid, comm, $vec);
+    }
+
+    delete(@comp_vec_by_tid[tid]);
+}
+
+kretprobe:mlx5e_open_queues
+/@channel_cpu_by_tid[tid]/
+{
+    delete(@channel_cpu_by_tid[tid]);
+}
+
+END
+{
+    printf("[mlx5_node_cpu] end\n");
+}

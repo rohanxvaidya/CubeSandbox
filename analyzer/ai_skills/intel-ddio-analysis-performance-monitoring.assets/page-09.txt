@@ -1,0 +1,58 @@
+3 Observing Intel® DDIO with PerfMon
+
+Since the Intel® DDIO feature is transparent to software, performance monitoring is the only method to show how effectively Intel® DDIO
+is utilized and aiding in optimization. While different monitoring tools may represent or display Intel® DDIO data in various ways, they all
+utilize the PerfMon events detailed in this section.
+
+3.1 CHA Unit PerMon
+
+The caching home agents in the uncore are at the heart of Intel® DDIO since they manage the caching behavior for Intel® DDIO flows.
+The PerfMon events from these CHA units can report if I/O requests are hitting or missing the cache. This is the key indicator of how
+effectively Intel® DDIO is utilized for the workload under analysis. The CHA unit events provide socket level information and do not provide
+per I/O device resolution, Although each CHA accumulates PerfMon counts individually, they can be summed together to generate a socket
+or system level view.
+
+3.1.1 Events
+
+When a CHA unit receives a request from an agent such as a core or I/O device, it places that request in its request queue called “table of
+requests” (TOR). A set of events associated with this TOR provide information about that request, such as which type of agent the request
+came from, the request type, and if the request was satisfied from caches (cache hit) or not (cache miss), These events are the
+UNC_TOR_INSERTS events.
+
+The following list details the most useful UNC_TOR_INSERTS events for Intel® DDIO analysis. For additional event details and the full list of
+UNC_TOR_INSERTS events, please see the JSON event definition file at the Performance Monitoring GitHub Location. [3]
+
+In the descriptions below, “local” refers to requests received by the CHA that were sent by an agent on the same socket, “IO” refers to any
+agents connected to M2IOSF, such as PCIE devices and integrated accelerators. In the TOR_INSERTS events below, a “HIT” means that the
+requested cache line was found in any cache on this socket, including L1, L2, and LLC. For simplicity, itis referred to as a cache hit or even
+an LLC hit,
+
+Event Name Description
+
+UNC_CHA_TOR_INSERTS.IO_PCIRDCUR Counts the total number of read requests made by local /O that have
+been inserted into the TOR. These are full cache-line read requests to
+get the most current data and do not change the existing state in any
+cache, Even if the I/O agent requests a partial cache-line read, a full
+cache-line is read from coherent memory to satisfy this request.
+
+UNC_CHA_TOR_INSERTS.IO_HIT_PCIRDCUR Counts the number of 1O_PCIRDCUR requests that hit in cache.
+
+ 
+
+UNC_CHA_TOR_INSERTS.IO_MISS_PCIRDCUR Counts the number of IO_PCIRDCUR requests that miss cache.
+
+UNC_CHA_TOR_INSERTS.10_ITOM Counts the total number of full cache-line write requests made by local
+/O that have been inserted into the TOR. ItoM, or “Invalid to be
+Modified,” is a request for cache-line ownership without the need to
+move data to the requesting agent with a read for ownership (RFO).
+
+UNC_CHA_TOR_INSERTS.IO_HIT_ITOM. Counts the number of full cache-line write requests that hit in cache.
+UNC_CHA_TOR_INSERTS.1O_MISS_ITOM Counts the number of full cache-line write requests that miss cache.
+UNC_CHA_TOR_INSERTS.IO_ITOMCACHENEAR Counts the total number of partial cache-line write requests made by
+
+local 1/0 that have been inserted into the TOR. Like ITOM requests, this
+is a request for cache-line ownership without the need to move data to
+the requesting agent.
+
+https:/Avww.intel,com/contentiwww/us/en/developer/articles/technical/ddio-analysis-performance-monitoring.html 9122
+

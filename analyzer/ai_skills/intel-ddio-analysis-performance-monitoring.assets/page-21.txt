@@ -1,0 +1,54 @@
+4112126, 6:14 AM Intel® Data Direct I/O Technology Performance Monitoring
++ increasing the number of I/O LLC ways.
+
+8 Notices and Disclaimers
+Performance varies by use, configuration, and other factors. Learn more at www.Intel.com/Performancelndex
+
+Performance results are based on testing as of the dates shown in configurations and may not reflect all publicly available updates. See the
+appendix for configuration details. No product or component can be absolutely secure
+
+Code names are used by Intel to identify products, technologies, or services that are in development and not publicly available. These are
+not "commercial" names and not intended to function as trademarks.
+
+Copies of documents which have an order number and are referenced in this document may be obtained by calling 1-800-548-4725 or
+visiting www.intel.com/design/literature.htm .
+
+Intel, the Intel logo, VTune and Xeon are trademarks of Intel Corporation in the U.S. and other countries.
+
+9 References
+
+* Progran
+
+ 
+
+[2] MIntel® Performance Monitoring GitHub Repository,” [Online], Available
+
+ 
+
+ 
+
+[3] “Sapphire Rapids Server Uncore Performance Monitoring Event List,” [Online]. Available
+
+ 
+
+ 
+
+Appendix
+
+Date 12/15/2023
+
+System Supermicro SYS-741GE-TNRT
+Baseboard ‘Supermicro X13DEG-QT
+Chassis Supermicro Other
+
+‘CPU Model INTEL(R) XEON(R) PLATINUM 8592+
+Microarchitecture EMR_XCC
+Sockets 2
+
+Cores per Socket 64
+Hyperthreading Enabled
+
+CPUs 256
+
+https:/Avww.intel,com/content/www/us/en/developer/articles/technical/ddio-analysis-performance-monitoring.html 2122
+

@@ -1,0 +1,2 @@
+#!/bin/bash
+echo "irdma0 port 1 ==> ens2f0 (Up)"

@@ -1,0 +1,285 @@
+#!/bin/bash
+
+#parameters:
+# $1 service type, e.g. meta, storage, admin.
+# $2 IP address,  specify the meta node IP, bydefault, use 1 meta node.
+# $3 Disk counter,  
+# $4 storage_node_ID,  only for storage node. 
+IP_SEG="192.168.200"
+META_IP="192.168.200.1"
+NUM_STORAGE_NODES=${NUM_STORAGE_NODES:-"2"}
+replicas=${replicas:-"2"}
+min_targets_per_disk=
+
+
+CLUSTER_ID="stage" 
+
+echo "${META_IP} meta" >> /etc/hosts 
+
+#cd /home/3fs/configs
+#sed -i 's/max_sge = 16/max_sge = 1/g' `grep -rl max_sge`
+
+
+pkill -9 hf3fs_fuse_main
+
+# for storage ndoe:
+echo "fs.aio-max-nr=67108864" >> /etc/sysctl.conf
+sysctl -p
+
+#### start to config meta node.
+
+cp ~/3fs/configs/monitor_collector_main.toml /opt/3fs/etc
+clickhouse-client -n < /home/3fs/deploy/sql/3fs-monitor.sql
+clickhouse-client -n -u default  < /home/3fs/deploy/sql/3fs-monitor.sql
+{
+# config monitormgmt . 
+[server.monitor_collector.reporter.clickhouse]
+db = '3fs'
+host = '127.0.0.1'
+passwd = ''
+port = '9000'
+user = 'default'
+
+}
+/opt/3fs/bin/monitor_collector_main --cfg /opt/3fs/etc/monitor_collector_main.toml &
+
+mkdir -p /opt/3fs/{bin,etc}
+rsync -avz meta:~/3fs/build/bin/admin_cli /opt/3fs/bin
+rsync -avz meta:~/3fs/configs/admin_cli.toml /opt/3fs/etc
+rsync -avz meta:/etc/foundationdb/fdb.cluster /opt/3fs/etc
+
+
+/opt/3fs/bin/admin_cli -cfg /opt/3fs/etc/admin_cli.toml help
+#step4. 3 .Initialize the cluster:
+service foundationdb start
+/opt/3fs/bin/admin_cli -cfg /opt/3fs/etc/admin_cli.toml "init-cluster --mgmtd /opt/3fs/etc/mgmtd_main.toml 1 1048576 16"
+
+
+cp /home/3fs/deploy/systemd/mgmtd_main.service /usr/lib/systemd/system
+/opt/3fs/bin/mgmtd_main --launcher_cfg /opt/3fs/etc/mgmtd_main_launcher.toml --app-cfg /opt/3fs/etc/mgmtd_main_app.toml 
+
+# Run list-nodes command to check if the cluster has been successfully initialized:
+/opt/3fs/bin/admin_cli -cfg /opt/3fs/etc/admin_cli.toml --config.mgmtd_client.mgmtd_server_addresses '["RDMA://192.168.200.1:8000"]' "list-nodes"
+
+
+#for meta server on meta nodes
+cp /home/3fs/configs/{meta_main_launcher.toml,meta_main.toml,meta_main_app.toml} /opt/3fs/etc
+###  copy , and update value.
+# upload the config value.
+/opt/3fs/bin/admin_cli -cfg /opt/3fs/etc/admin_cli.toml --config.mgmtd_client.mgmtd_server_addresses '["RDMA://192.168.200.1:8000"]' "set-config --type META --file /opt/3fs/etc/meta_main.toml"
+
+# start meta server:
+cp /home/3fs/deploy/systemd/meta_main.service /usr/lib/systemd/system
+systemctl start meta_main
+#-->
+/opt/3fs/bin/meta_main --launcher_cfg /opt/3fs/etc/meta_main_launcher.toml --app-cfg /opt/3fs/etc/meta_main_app.toml
+# check list node:
+/opt/3fs/bin/admin_cli -cfg /opt/3fs/etc/admin_cli.toml --config.mgmtd_client.mgmtd_server_addresses '["RDMA://192.168.200.1:8000"]' "list-nodes"
+
+===========================storage node=================================
+# in storage node:
+Step 3: Admin client
+....
+
+
+# preapre NVME
+mkdir -p /storage/data{1..8}
+mkdir -p /var/log/3fs
+for i in {1..8};do mkfs.xfs -f -L data${i} /dev/nvme${i}n1;mount -o noatime,nodiratime -L data${i} /storage/data${i};done
+mkdir -p /storage/data{1..8}/3fs
+sysctl -w fs.aio-max-nr=67108864
+
+# upload config:
+/opt/3fs/bin/admin_cli -cfg /opt/3fs/etc/admin_cli.toml --config.mgmtd_client.mgmtd_server_addresses '["RDMA://192.168.200.1:8000"]' "set-config --type STORAGE --file /opt/3fs/etc/storage_main.toml"
+/opt/3fs/bin/admin_cli -cfg /opt/3fs/etc/admin_cli.toml --config.mgmtd_client.mgmtd_server_addresses '["RDMA://192.168.200.1:8000"]' "set-config --type STORAGE --file /opt/3fs/etc/storage_main.toml"
+
+# start storage service
+rsync -avz meta:~/3fs/deploy/systemd/storage_main.service /usr/lib/systemd/system
+systemctl start storage_main
+#--> 
+/opt/3fs/bin/storage_main --launcher_cfg /opt/3fs/etc/storage_main_launcher.toml --app-cfg /opt/3fs/etc/storage_main_app.toml
+
+/opt/3fs/bin/admin_cli -cfg /opt/3fs/etc/admin_cli.toml --config.mgmtd_client.mgmtd_server_addresses '["RDMA://192.168.200.1:8000"]' "list-nodes"
+============================================================
+
+
+#on mgmt node/meta node:
+
+/opt/3fs/bin/admin_cli -cfg /opt/3fs/etc/admin_cli.toml --config.mgmtd_client.mgmtd_server_addresses '["RDMA://192.168.200.1:8000"]' "user-add --root --admin 0 root"
+Name               root
+Token              AACIpNEJ8QD8jVwS2wCY+BFI(Expired at N/A)
+IsRootUser         true
+IsAdmin            true
+Gid                0
+SupplementaryGids
+
+#config :
+pip install -r /home/3fs/deploy/data_placement/requirements.txt
+python /home/3fs/deploy/data_placement/src/model/data_placement.py -ql -relax -type CR --num_nodes 2 --replication_factor 2 --min_targets_per_disk 4
+python /home/3fs/deploy/data_placement/src/setup/gen_chain_table.py \
+   --chain_table_type CR --node_id_begin 10001 --node_id_end 10002 \
+   --num_disks_per_node 8 --num_targets_per_disk 4 \
+   --target_id_prefix 1 --chain_id_prefix 9 \
+   --incidence_matrix_path output/DataPlacementModel-v_5-b_10-r_6-k_3-λ_2-lb_1-ub_1/incidence_matrix.pickle 
+#output/DataPlacementModel-v_2-b_4-r_4-k_2-λ_4-lb_1-ub_0   
+   
+   
+## on mgmt,
+#3 create storage target:
+/opt/3fs/bin/admin_cli --cfg /opt/3fs/etc/admin_cli.toml --config.mgmtd_client.mgmtd_server_addresses '["RDMA://192.168.200.1:8000"]' --config.user_info.token $(<"/opt/3fs/etc/token.txt") < output/create_target_cmd.txt
+#4 Upload chains to mgmtd service:
+/opt/3fs/bin/admin_cli --cfg /opt/3fs/etc/admin_cli.toml --config.mgmtd_client.mgmtd_server_addresses '["RDMA://192.168.200.1:8000"]' --config.user_info.token $(<"/opt/3fs/etc/token.txt") "upload-chains output/generated_chains.csv"
+#5 Upload chain table to mgmtd service:
+/opt/3fs/bin/admin_cli --cfg /opt/3fs/etc/admin_cli.toml --config.mgmtd_client.mgmtd_server_addresses '["RDMA://192.168.200.1:8000"]' --config.user_info.token $(<"/opt/3fs/etc/token.txt") "upload-chain-table --desc stage 1 output/generated_chain_table.csv"
+
+#6 check status. 
+/opt/3fs/bin/admin_cli -cfg /opt/3fs/etc/admin_cli.toml --config.mgmtd_client.mgmtd_server_addresses '["RDMA://192.168.200.1:8000"]' "list-chains"
+/opt/3fs/bin/admin_cli -cfg /opt/3fs/etc/admin_cli.toml --config.mgmtd_client.mgmtd_server_addresses '["RDMA://192.168.200.1:8000"]' "list-chain-tables"
+
+
+# test on fuse, in meta node:
+
+cp /home/3fs/build/bin/hf3fs_fuse_main /opt/3fs/bin
+cp /home/3fs/configs/{hf3fs_fuse_main_launcher.toml,hf3fs_fuse_main.toml,hf3fs_fuse_main_app.toml} /opt/3fs/etc
+
+#2,
+mkdir -p /3fs/stage
+
+# #3, set clusterID
+# cluster_id = "stage"
+# mountpoint = '/3fs/stage'
+# token_file = '/opt/3fs/etc/token.txt'
+
+# [mgmtd_client]
+# mgmtd_server_addresses = ["RDMA://192.168.1.1:8000"]
+
+# #4, mgmtd,monitor address, 
+# [mgmtd]
+# mgmtd_server_addresses = ["RDMA://192.168.1.1:8000"]
+
+# [common.monitor.reporters.monitor_collector]
+# remote_ip = "192.168.1.1:10000"
+
+#Set cluster ID, mountpoint, token file and mgmtd address in hf3fs_fuse_main_launcher.toml
+cluster_id = "stage"
+mountpoint = '/3fs/stage'
+token_file = '/opt/3fs/etc/token.txt'
+
+[mgmtd_client]
+mgmtd_server_addresses = ["RDMA://192.168.1.1:8000"]
+
+#Set mgmtd and monitor address in hf3fs_fuse_main.toml.
+[mgmtd]
+mgmtd_server_addresses = ["RDMA://192.168.1.1:8000"]
+
+[common.monitor.reporters.monitor_collector]
+remote_ip = "192.168.1.1:10000"
+
+#5, Config file of FUSE client is also managed by mgmtd service. Use admin_cli to upload the config file to mgmtd:
+/opt/3fs/bin/admin_cli -cfg /opt/3fs/etc/admin_cli.toml --config.mgmtd_client.mgmtd_server_addresses '["RDMA://192.168.200.1:8000"]' "set-config --type FUSE --file /opt/3fs/etc/hf3fs_fuse_main.toml"
+
+#6, fuse client start,
+cp ~/3fs/deploy/systemd/hf3fs_fuse_main.service /usr/lib/systemd/system
+systemctl start hf3fs_fuse_main
+--> 
+/opt/3fs/bin/hf3fs_fuse_main --launcher_cfg /opt/3fs/etc/hf3fs_fuse_main_launcher.toml
+
+#
+
+
+### start test:
+
+fio -numjobs=128 -fallocate=none -iodepth=2 -ioengine=libaio -direct=1 -rw=read -bs=4M --group_reporting -size=100M -time_based -runtime=3000 -name=2depth_128file_4M_direct_read_bw -directory=/3fs/stage
+
+
+
+================================================================================
+logs
+================================================================================
+
+root@storage-node-1:/home# /opt/3fs/bin/admin_cli --cfg /opt/3fs/etc/admin_cli.toml --config.mgmtd_client.mgmtd_server_addresses '["RDMA://192.168.200.1:8000"]' --config.user_info.token $(<"/opt/3fs/etc/token.txt") < output/create_target_cmd.txt
+Create target 101000100101 on disk 0 of 10001 succeeded
+Create target 101000200101 on disk 0 of 10002 succeeded
+Create target 101000100102 on disk 0 of 10001 succeeded
+Create target 101000200102 on disk 0 of 10002 succeeded
+Create target 101000100103 on disk 0 of 10001 succeeded
+Create target 101000200103 on disk 0 of 10002 succeeded
+Create target 101000100104 on disk 0 of 10001 succeeded
+Create target 101000200104 on disk 0 of 10002 succeeded
+Create target 101000100201 on disk 1 of 10001 succeeded
+Create target 101000200201 on disk 1 of 10002 succeeded
+Create target 101000100202 on disk 1 of 10001 succeeded
+Create target 101000200202 on disk 1 of 10002 succeeded
+Create target 101000100203 on disk 1 of 10001 succeeded
+Create target 101000200203 on disk 1 of 10002 succeeded
+Create target 101000100204 on disk 1 of 10001 succeeded
+Create target 101000200204 on disk 1 of 10002 succeeded
+Create target 101000100301 on disk 2 of 10001 succeeded
+Create target 101000200301 on disk 2 of 10002 succeeded
+Create target 101000100302 on disk 2 of 10001 succeeded
+Create target 101000200302 on disk 2 of 10002 succeeded
+Create target 101000100303 on disk 2 of 10001 succeeded
+Create target 101000200303 on disk 2 of 10002 succeeded
+Create target 101000100304 on disk 2 of 10001 succeeded
+Create target 101000200304 on disk 2 of 10002 succeeded
+Create target 101000100401 on disk 3 of 10001 succeeded
+Create target 101000200401 on disk 3 of 10002 succeeded
+Create target 101000100402 on disk 3 of 10001 succeeded
+Create target 101000200402 on disk 3 of 10002 succeeded
+Create target 101000100403 on disk 3 of 10001 succeeded
+Create target 101000200403 on disk 3 of 10002 succeeded
+Create target 101000100404 on disk 3 of 10001 succeeded
+Create target 101000200404 on disk 3 of 10002 succeeded
+Create target 101000100501 on disk 4 of 10001 succeeded
+Create target 101000200501 on disk 4 of 10002 succeeded
+Create target 101000100502 on disk 4 of 10001 succeeded
+Create target 101000200502 on disk 4 of 10002 succeeded
+Create target 101000100503 on disk 4 of 10001 succeeded
+Create target 101000200503 on disk 4 of 10002 succeeded
+Create target 101000100504 on disk 4 of 10001 succeeded
+Create target 101000200504 on disk 4 of 10002 succeeded
+Create target 101000100601 on disk 5 of 10001 succeeded
+Create target 101000200601 on disk 5 of 10002 succeeded
+Create target 101000100602 on disk 5 of 10001 succeeded
+Create target 101000200602 on disk 5 of 10002 succeeded
+Create target 101000100603 on disk 5 of 10001 succeeded
+Create target 101000200603 on disk 5 of 10002 succeeded
+Create target 101000100604 on disk 5 of 10001 succeeded
+Create target 101000200604 on disk 5 of 10002 succeeded
+
+
+root@storage-node-1:/home# /opt/3fs/bin/admin_cli --cfg /opt/3fs/etc/admin_cli.toml --config.mgmtd_client.mgmtd_server_addresses '["RDMA://192.168.200.1:8000"]' --config.user_info.token $(<"/opt/3fs/etc/token.txt") "upload-chains output/generated_chains.csv"
+Upload 24 chains succeeded
+root@storage-node-1:/home# /opt/3fs/bin/admin_cli --cfg /opt/3fs/etc/admin_cli.toml --config.mgmtd_client.mgmtd_server_addresses '["RDMA://192.168.200.1:8000"]' --config.user_info.token $(<"/opt/3fs/etc/token.txt") "upload-chain-table --desc stage 1 output/generated_chain_table.csv"
+Upload ChainTableId(1) of ChainTableVersion(1) succeeded
+root@storage-node-1:/home#
+
+
+root@storage-node-3:/home# /opt/3fs/bin/admin_cli -cfg /opt/3fs/etc/admin_cli.toml --config.mgmtd_client.mgmtd_server_addresses '["RDMA://192.168.200.1:8000"]' "list-chains" -v 2
+ChainId    ReferencedBy  ChainVersion  Status   PreferredOrder  Target                          Target
+300100001  1             1             SERVING  []              101000100101(SERVING-UPTODATE)  101000200101(SERVING-UPTODATE)
+300100002  1             1             SERVING  []              101000100102(SERVING-UPTODATE)  101000200102(SERVING-UPTODATE)
+300100003  1             1             SERVING  []              101000100103(SERVING-UPTODATE)  101000200103(SERVING-UPTODATE)
+300100004  1             1             SERVING  []              101000100104(SERVING-UPTODATE)  101000200104(SERVING-UPTODATE)
+300200001  1             1             SERVING  []              101000100201(SERVING-UPTODATE)  101000200201(SERVING-UPTODATE)
+300200002  1             1             SERVING  []              101000100202(SERVING-UPTODATE)  101000200202(SERVING-UPTODATE)
+300200003  1             1             SERVING  []              101000100203(SERVING-UPTODATE)  101000200203(SERVING-UPTODATE)
+300200004  1             1             SERVING  []              101000100204(SERVING-UPTODATE)  101000200204(SERVING-UPTODATE)
+300300001  1             1             SERVING  []              101000100301(SERVING-UPTODATE)  101000200301(SERVING-UPTODATE)
+300300002  1             1             SERVING  []              101000100302(SERVING-UPTODATE)  101000200302(SERVING-UPTODATE)
+300300003  1             1             SERVING  []              101000100303(SERVING-UPTODATE)  101000200303(SERVING-UPTODATE)
+300300004  1             1             SERVING  []              101000100304(SERVING-UPTODATE)  101000200304(SERVING-UPTODATE)
+300400001  1             1             SERVING  []              101000100401(SERVING-UPTODATE)  101000200401(SERVING-UPTODATE)
+300400002  1             1             SERVING  []              101000100402(SERVING-UPTODATE)  101000200402(SERVING-UPTODATE)
+300400003  1             1             SERVING  []              101000100403(SERVING-UPTODATE)  101000200403(SERVING-UPTODATE)
+300400004  1             1             SERVING  []              101000100404(SERVING-UPTODATE)  101000200404(SERVING-UPTODATE)
+300500001  1             1             SERVING  []              101000100501(SERVING-UPTODATE)  101000200501(SERVING-UPTODATE)
+300500002  1             1             SERVING  []              101000100502(SERVING-UPTODATE)  101000200502(SERVING-UPTODATE)
+300500003  1             1             SERVING  []              101000100503(SERVING-UPTODATE)  101000200503(SERVING-UPTODATE)
+300500004  1             1             SERVING  []              101000100504(SERVING-UPTODATE)  101000200504(SERVING-UPTODATE)
+300600001  1             1             SERVING  []              101000100601(SERVING-UPTODATE)  101000200601(SERVING-UPTODATE)
+300600002  1             1             SERVING  []              101000100602(SERVING-UPTODATE)  101000200602(SERVING-UPTODATE)
+300600003  1             1             SERVING  []              101000100603(SERVING-UPTODATE)  101000200603(SERVING-UPTODATE)
+300600004  1             1             SERVING  []              101000100604(SERVING-UPTODATE)  101000200604(SERVING-UPTODATE)
+
+root@storage-node-3:/home# /opt/3fs/bin/admin_cli -cfg /opt/3fs/etc/admin_cli.toml --config.mgmtd_client.mgmtd_server_addresses '["RDMA://192.168.200.1:8000"]' "list-chain-tables" -v 2

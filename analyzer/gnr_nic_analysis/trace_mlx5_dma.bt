@@ -1,0 +1,22 @@
+#!/usr/bin/bpftrace
+
+#include <linux/device.h>
+#include <linux/dma-mapping.h>
+
+kprobe:dma_map_page_attrs
+{
+    /* arg0 is 'struct device *dev' */
+    $dev = (struct device *)arg0;
+    $pci_name = str($dev->parent->init_name);
+
+    /* Filter for your specific PCI device 0000:64:00.0 */
+    if ($pci_name == "0000:64:00.0") {
+        /* arg1 is the 'struct page *page' */
+        /* arg2 is the offset */
+        /* We use the kernel helper to get the physical address */
+        $phys = (uint64)arg1 << 12; // Simplistic page to phys conversion
+        
+        printf("Time: %-8s | CPU: %2d | DMA Physical Address: 0x%lx\n", 
+               elapsed / 1000000, cpu, $phys + arg2);
+    }
+}

@@ -1,0 +1,53 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+if [[ $# -ne 1 ]]; then
+  echo "Usage: kernel-default <kernel-version|/boot/vmlinuz-...|bls-id>" >&2
+  exit 2
+fi
+
+arg="$1"
+
+# Resolve target kernel path from version/path/id
+if [[ -f "$arg" && "$arg" == /boot/vmlinuz-* ]]; then
+  kernel_path="$arg"
+elif [[ -f "/boot/vmlinuz-$arg" ]]; then
+  kernel_path="/boot/vmlinuz-$arg"
+else
+  # Try BLS ID -> kernel path
+  bls_file="/boot/loader/entries/${arg}.conf"
+  if [[ -f "$bls_file" ]]; then
+    krel=$(sed -n "s#^linux /vmlinuz-##p" "$bls_file")
+    if [[ -n "$krel" && -f "/boot/vmlinuz-$krel" ]]; then
+      kernel_path="/boot/vmlinuz-$krel"
+    else
+      echo "Cannot resolve kernel path from BLS id: $arg" >&2
+      exit 3
+    fi
+  else
+    echo "Kernel not found: $arg" >&2
+    exit 3
+  fi
+fi
+
+id=$(grubby --info="$kernel_path" | sed -n "s/^id=\"\([^\"]*\)\"/\1/p")
+if [[ -z "$id" ]]; then
+  echo "Cannot read BLS id for kernel: $kernel_path" >&2
+  exit 4
+fi
+
+grubby --set-default "$kernel_path"
+# Keep GRUB saved_entry consistent as well.
+grub2-set-default "$id"
+
+grub2-editenv /boot/grub2/grubenv set saved_entry="$id"
+grub2-editenv /boot/grub2/grubenv set boot_success=1
+
+if [[ -d /boot/efi/EFI/centos ]]; then
+  grub2-editenv /boot/efi/EFI/centos/grubenv create
+  grub2-editenv /boot/efi/EFI/centos/grubenv set saved_entry="$id"
+  grub2-editenv /boot/efi/EFI/centos/grubenv set boot_success=1
+fi
+
+echo "Default kernel set to: $(grubby --default-kernel)"
+echo "Default title      : $(grubby --default-title)"

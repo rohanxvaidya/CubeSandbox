@@ -1,0 +1,34 @@
+
+system memory, and improving data read latencies observed by the data consumers, such as CPU cores or accelerators. Intel® DDIO
+applies to most 1/0 devices attached to the system 1/O ports as well as built-in devices such as accelerators,
+
+In systems with multi-level memory hierarchy, accesses to data residing in higher cache layers enjoy lower latencies than accesses to
+DRAM. In systems without Intel® DDIO (prior to Intel® Xeon® processor E5 family and Intel® Xeon® processor E7 v2 family), inbound
+DMA writes terminate in system memory, resulting in relatively longer latency experienced by the consumers of the data, With Intel®
+DDIO, the inbound writes are allocated in CPU's LLC, allowing the consumers to get the data much quicker.
+
+In Intel architecture, inbound transactions initiated by the device pass through the integrated 1/O controller, which serves as the CPU's
+coherent domain interface. M2IOSF negotiates the transaction with CHAs, which also contain slices of the CPU's LLC cache, During this
+negotiation, in some scenarios, MZIOSF may request temporary speculative ownership of the cache line, holding on to it for the duration of
+the transaction if possible. Maximum granularity of Intel® DDIO transactions is one cache line (64 bytes), but data sizes smaller than 64B
+are allowed and are known as partial transactions, M2IOSF is tasked with breaking up larger transactions into cache line granularity,
+
+Inbound 1/0 memory read and write transactions are coherent and the coherence is handled by the CHAS. The CHAs are responsible for
+looking up the data in the LLC or other system caches, accessing system memory, issuing snoops to other caching agents, and otherwise
+maintaining data coherence. Each CHA contains a slice of the LLC and a queue called "Table Of Requests” (TOR). All data and control
+messages in the mesh pass through the TOR in the CHA; the destination CHA for any memory transaction is determined by the hash of the
+memory address of that transaction. The TOR in each CHA unit is an ideal observation point for monitoring data movement in the mesh
+with hardware PMON counters.
+
+Inbound I/O transactions with Intel® DDIO enabled behave similarly to cache transactions initiated by CPU cores. An I/O transaction results
+in a cache hit when the target address is found in one or more of the system's caches; otherwise, a cache miss is observed.
+
+A high-level inbound 1/0 transaction flow can be described as follows:
+1, An I/O device initiates the inbound read request or inbound write transaction.
+2. M2IOSF divides the transaction into 64B chunks, if necessary, and forwards the transaction to the CHAS.
+3, The CHAs check for cache hit or miss and perform the necessary coherence operations such as snoops, In the data read case, the CHA
+is also responsible for fetching the data from its current location, such as a caching agent, another socket, or memory.
+4. In the data read case, the CHA sends data back to the Integrated 1/0 controller.
+
+https:/Awww.intel.com/content/www/us/en/developer/articles/technical/ddio-analysis-performance-monitoring.html 422
+

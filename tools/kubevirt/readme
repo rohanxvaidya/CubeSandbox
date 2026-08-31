@@ -1,0 +1,4 @@
+[package_kubevirt_image.sh]
+ - Used for pull the customized kubevirt docker image and package them to tar.gz file, then push to internal website.
+ - Need to specify the kubevirt vhost version, and it will be uploaded interlnal artifactory, so need the user name and token for upload.
+ - example: KUBEVIRT_VHOST_VERSION="V12" ./package_kubevirt_image.sh [user name] [credential]

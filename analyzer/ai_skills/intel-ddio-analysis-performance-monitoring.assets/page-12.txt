@@ -1,0 +1,107 @@
+4/12/26, 6:14 AM
+3.2.2 Metrics
+
+Intel® Data Direct VO Technology Performance Monitoring
+
+The following metrics can be used to simplify PerfMon event counts into a more human readable result for analyzing per device request rate
+
+and bandwidth:
+
+Metric Name
+
+io_inbound_read_requests
+
+io_inbound_read_bandwidth
+
+io_inbound_write_requests
+
+io_inbound_write_bandwidth
+
+io_outbound_read_requests
+
+io_outbound_read_bandwidth
+
+io_outbound_write_requests
+
+io_outbound_write_bandwidth
+
+3.3 IMC Unit PerfMon
+
+Formula
+
+UNC_110_TXN_REQ_OF_CPU.MEM_READ.PART[O-
+71/ SECONDS
+
+UNC_II0_DATA_REQ_OF_CPU.MEM_READ.PART[0-
+7)* 41 1000000 / SECONDS
+
+UNC_110_TXN_REQ_OF_CPU.MEM_WRITE.PART[0-
+7] / SECONDS
+
+UNC_II0_DATA_REQ_OF_CPU.MEM_WRITE.PART[O-
+7] * 4/ 1000000 / SECONDS
+
+UNC_IIO_TXN_REQ_BY_CPU,MEM_READ.PART[O-
+7|/ SECONDS
+
+UNC_110_DATA_REQ_OF_CPU.CMPD.PART|0-7] * 4
+/1000000 / SECONDS
+
+UNC_IIO_TXN_REQ_BY_CPU.MEM_WRITE.PART[0-
+7|/ SECONDS
+
+UNC_110_DATA_REQ_BY_CPU.MEM_WRITE.PART(O-
+7] *4 /1000000 / SECONDS
+
+Table 4: M2IOSF Requests and Bandwidth Metrics
+
+Description
+
+Inbound read requests per second,
+issued by VO device mapped to
+specified PART.
+
+Bandwidth (in MB/S) due to inbound
+read requests from I/O device
+mapped to specified PART. The
+bandwidth measured is outbound
+completions from CPU to device due
+to inbound read requests
+
+Inbound write requests per second,
+issued by /O device mapped to
+specified PART.
+
+Bandwidth (in MB/S) due to inbound
+writes from //O device mapped to
+specified PART.
+
+Outbound read requests per second,
+issued to I/O device mapped to
+specified PART.
+
+Bandwidth (in MB/S) due to outbound
+read requests to the I/O device
+mapped to specified PART. The
+bandwidth measured is inbound
+completions from CPU to device due
+to outbound read requests.
+
+Outbound write requests per second,
+issued to I/O device mapped to
+specified PART.
+
+Bandwidth (in MB/S) due to outbound
+writes to the /O device mapped to
+specified PART.
+
+Monitoring memory bandwidth can also help evaluate the effectiveness of Intel® DDIO caching since efficient Intel® DDIO use increases
+cache hits, reducing the need for memory accesses. Only two events are needed from the IMC PMU to watch for memory access: the DDR
+Column Address Strobe (CAS) read-write events.
+
+3.3,1 IMC PerfMon Events
+
+https:/Avww.intel,com/content/www/us/en/developer/articles/technical/ddio-analysis-performance-monitoring.html
+
+12122
+

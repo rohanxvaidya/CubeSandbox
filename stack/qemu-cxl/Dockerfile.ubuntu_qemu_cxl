@@ -1,0 +1,56 @@
+# ubuntu-qemu-cxl
+# docker build -t ubuntu-qemu-cxl -f Dockerfile.ubuntu_qemu_cxl . --build-arg https_proxy=$https_proxy --build-arg http_proxy=$http_proxy --build-arg no_proxy=$no_proxy
+
+ARG OS_VER="24.04"
+ARG OS_IMAGE="ubuntu"
+FROM ${OS_IMAGE}:${OS_VER}
+ARG DEBIAN_FRONTEND=noninteractive
+
+ENV  BASE_PATH=/opt
+ENV  WORK_PATH=${BASE_PATH}/qemu
+ENV  LOG_PATH=${BASE_PATH}/logs
+
+RUN apt-get update && \
+    apt-get install -y git make gcc nvme-cli curl iproute2 inetutils-ping \
+    libaio-dev  liburing-dev liburing2 wget pciutils bc zlib1g kmod jq pkg-config \
+    pipx python3-venv libnfs-dev libseccomp-dev libcap-ng-dev libxkbcommon-dev libslirp-dev \
+    libpmem-dev numactl libvirt-dev libaio-dev libaio1t64 ninja-build sphinx python3-sphinx \
+    bzip2 python3-pip vim net-tools libglib2.0-dev libpixman-1-dev sudo
+
+# for build kernel
+RUN apt-get install -y libncurses-dev pkg-config build-essential flex bison elfutils libelf-dev libssl-dev
+    # for ubuntu-23.10
+#RUN rm /usr/lib/python3.11/EXTERNALLY-MANAGED
+# for ubuntu-24.04
+RUN rm /usr/lib/python3.12/EXTERNALLY-MANAGED
+
+
+RUN python3 -m pip install sphinx_rtd_theme
+
+WORKDIR   ${BASE_PATH}
+
+RUN export http_proxy=http://child-prc.intel.com:913/
+RUN export https_proxy=http://child-prc.intel.com:913/
+#cxl-2023-05-25 
+RUN git clone https://gitlab.com/jic23/qemu.git && \
+    cd qemu && \
+    git checkout cxl-2024-04-22-draft
+# build
+RUN cd qemu && mkdir build && cd build && \
+    ../configure --prefix=/opt/qemu-jic23 --target-list=i386-softmmu,x86_64-softmmu --enable-libpmem --enable-slirp && \
+    make -j all  && \
+    make install
+
+#RUN /opt/qemu-cxl-shared/bin/qemu-system-x86_64 --version
+
+# RUN wget --no-check-certificate -O memshare.tgz https://app.box.com/shared/static/7iu9dok7me6zk29ed263uhpkd0tn4uqt.tgz && \
+#     tar -xzf ./memshare.tgz
+
+COPY ./memshare.tgz /opt/
+RUN  tar -xvf /opt/memshare.tgz
+
+COPY /script  /opt/
+RUN chmod +x /opt/*.sh
+
+
+

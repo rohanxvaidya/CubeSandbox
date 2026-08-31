@@ -1,0 +1,22 @@
+# export-host-new.py 
+## 用来导出host测试后的相关数据
+### 1、使用方法是将export-host-new.py 和 kudas.sh放入fiodict_...out同级目录
+### 2、使用脚本中提示的代码 得到该目录下带时间戳的case的目录名称，复制你想要导出的部分，通常只需要分seq和rand两大类，复制进export-host-new.py 的listOUT=[]字典内。
+```
+for file in $(ls|grep -v daochu.py|grep -v kudas.sh|grep -v out.csv|grep -v bg); do echo "'${file}',"; done
+```
+### 3、执行python3 export-host-new.py 根据提示键入BW或者IOPS 然后回车，即可得到out.csv
+
+# export-kubevirt-new.py
+## 用来导出vhost和virtIO测试后的相关数据
+### 1、使用方法是将export-kubevirt-new.py 和 kudas.sh放入random_read/random_write..同级目录
+### 2、修改脚本中的CASE_ID和listOUT=[]字典，来匹配你的实际情况。
+### 3、执行python3 export-kubevirt-new.py 根据提示键入BW或者IOPS 然后回车，即可得到out.csv
+
+# export_toplog_excel 
+## 用来导出top和sar相关数据 大多是需要放在1/2这种case目录下
+## 脚本写的比较乱，bug也多(除了top-c.py)，需要根据实际情况更改和使用
+### net-c.py用来导出 sar-net数据
+### disk-c.py用来导出 sar-io数据
+### top-c.py用来导出 osd的cpu和mem数据，当遇见bug需要用top-c-plus-xiuzheng.py和top-111c-xiuzheng.py辅助
+### export-top.py为早期的osd的cpu和mem数据导出数据用的脚本，仅作参考。

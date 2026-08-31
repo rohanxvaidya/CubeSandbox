@@ -1,0 +1,91 @@
+# rocky-daos-rpm
+
+# Docker to build up base daos stack with an image of rockylinux 8 based
+#
+
+ARG OS_VER=8
+ARG OS_IMAGE=rockylinux/rockylinux
+ARG BASE_DISTRO=${OS_IMAGE}:${OS_VER}
+ARG WORK_PATH=/home/daos/
+ARG CODE_PATH=${WORK_PATH}/daos/
+ARG BUILD_PRE=${WORK_PATH}/pre
+
+# Pull base image
+FROM $BASE_DISTRO as basic
+LABEL maintainer="michael.m.zhang@intel.com"
+# Needed for later use of BASE_DISTRO
+ENV BASE_DISTRO=${BASE_DISTRO}
+
+# # RUN dnf group install -y "C Development Tools and Libraries"
+# RUN dnf update -y && dnf group install -y "Development Tools" && \ 
+#     dnf install -y golang pixman pixman-devel zlib zlib-devel python3 \
+#     bzip2 bzip2-devel acpica-tools pkgconf-pkg-config libaio libaio-devel \
+#     liburing libzstd libzstd-devel libgudev \
+#     libssh libssh-devel kernel-devel numactl numactl-devel libpmem libpmem-devel \
+#     daxctl daxctl-devel genisoimage libslirp libslirp-devel dbus-daemon perl \
+#     libgcrypt libgcrypt-devel libpng libpng-devel 
+
+RUN dnf update -y && dnf group install -y "Development Tools" && \ 
+    dnf install -y openssh-server openssh-clients passwd net-tools \
+    golang pixman pixman-devel zlib zlib-devel python3  \
+    bzip2 bzip2-devel acpica-tools pkgconf-pkg-config libaio libaio-devel \
+    liburing libzstd libzstd-devel libgudev wget vim dnf-plugins-core && dnf clean all
+RUN dnf config-manager --set-enabled powertools
+
+#yum install dnf-plugins-core
+#yum config-manager --set-enabled powertools
+
+ARG REPO_FILE_URL
+ARG STACK_REPO="https://github.com/daos-stack/daos.git"
+ARG BRANCH="v2.6.0 "
+
+ENV WORK_PATH=/home/daos/
+ARG MAJOR_VER=${OS_VER}
+
+ENV DAOS_VER=v2.6
+ARG DAOS_REP="https://packages.daos.io/v2.6/EL8/packages/x86_64/daos_packages.repo"
+ARG DAOS_RPM_PGP_KEY="https://packages.daos.io/RPM-GPG-KEY"
+RUN wget -O /etc/yum.repos.d/daos-packages.repo ${DAOS_REP} && rpm --import ${DAOS_RPM_PGP_KEY} 
+# RUN rpm --import ${DAOS_RPM_PGP_KEY} && yum install -y epel-release daos-admin daos-client daos-server && yum clean all
+RUN rpm --import ${DAOS_RPM_PGP_KEY} && yum install -y epel-release &&  \
+    yum install -y daos-server && \
+    yum install -y daos-client && \
+    yum install -y daos-admin  && \
+    yum install -y daos-devel  && \
+    yum clean all
+
+# RUN rpm --import ${DAOS_RPM_PGP_KEY} 
+# RUN yum install -y epel-release 
+# RUN yum install -y daos-admin 
+# RUN yum install -y daos-client 
+# RUN yum install -y daos-server
+
+WORKDIR ${WORK_PATH}
+
+COPY /scripts  ${WORK_PATH}/scripts
+COPY /config  ${WORK_PATH}/config
+USER root:root
+
+### Build FIO
+ARG FIO_VER="3.38" 
+ARG FIO_REPO="https://github.com/axboe/fio.git"
+RUN cd ${WORK_PATH}/ && git clone ${FIO_REPO} fio && \
+    cd fio && git checkout fio-${FIO_VER} && \
+    ./configure && \
+    make && make install
+ # CFLAGS="-I/usr/include" LDFLAGS="-L/usr/lib64" ./configure && \
+
+ENV LD_LIBRARY_PATH=/usr/lib64
+#ENV LD_PRELOAD=/usr/lib64/libioil.so:$LD_PRELOAD
+ENV LD_PRELOAD=/usr/lib64/libpil4dfs.so:$LD_PRELOAD
+RUN chmod +x ${WORK_PATH}/scripts/*.sh
+RUN mkdir -p /etc/daos && \
+    mkdir -p /var/run/daos_server && \
+    mkdir -p /var/daos/config && \
+    mkdir -p /mnt/daos && \	
+    mkdir -p /var/run/daos_agent
+
+##### DEBUG usage###
+ENV https_proxy=http://Proxy-shz.intel.com:912/
+ENV http_proxy=http://Proxy-shz.intel.com:912/
+

@@ -1,0 +1,24 @@
+# To display the perf.data header info, please use --header/--header-only options.
+#
+#
+# Total Lost Samples: 0
+#
+# Samples: 44K of event 'cycles'
+# Event count (approx.): 98282321717
+#
+# Children      Self       Samples  Shared Object   
+# ........  ........  ............  ................
+#
+    76.34%    76.34%         33660  [kernel.vmlinux]
+     7.95%     7.95%          3511  redis-server    
+     7.10%     7.10%          3131  [nf_conntrack]  
+     4.04%     4.04%          1772  [mlx5_core]     
+     3.55%     3.55%          1570  libc.so.6       
+     0.51%     0.51%           226  [vdso]          
+     0.47%     0.47%           204  [nf_nat]        
+     0.05%     0.05%            21  [nf_defrag_ipv4]
+
+
+#
+# (Tip: Show user configuration overrides: perf config --user --list)
+#

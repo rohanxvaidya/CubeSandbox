@@ -1,0 +1,74 @@
+
+    
+  
+ 
+
+Unified CHA and 3 Cache
+
+“Mesh
+
+ 
+
+M2i0SF
+
+ 
+
+REQ_BY_CPU.MEM_WRITE.PART(O-7}
+'A_REQ_BY_CPU.MEM_WRITE.PART(O-7]
+
+UNC_lO_DATA_REQ_OF CPU.
+
+ 
+
+(CMPD. PARTIO-7.
+
+UNC_O_TXN_REQ_@Y_CPU.MEM_READ.PART(O-7]
+
+ 
+
+ 
+
+PCE
+
+Figure 7: PerfMon Events for Outbound I/O Flows
+
+Unlike inbound read requests, the outbound read data is counted on the completion data (CMPD) sent from I/O to the CPU with the
+UNC_IIO_DATA_REQ_OF_CPU.CMPD event.
+
+4 Workload Optimizations to Improve Intel® DDIO Efficiency
+
+1
+
+Reuse of memory addresses, By reusing memory addresses for 1/0 traffic buffers, you can help ensure that the data remains in the
+cache for as long as possible. This can reduce the need for costly memory accesses. In real-world applications, this is often
+accomplished by pre-allocating a sufficiently large number of memory buffers to store incoming I/O data.
+
+Improving temporal locality. Temporal locality refers to the practice of repeatedly accessing a specific memory location within a
+short time period. By improving the temporal locality of the reused buffers, you can increase the chances that a required piece of data
+is still in the cache when needed again, reducing the nead to access main memory. Expanding on the previous example, storing data
+buffers in a stack structure instead of a FIFO or a linked list would improve the temporal locality of the data,
+
+Improving the time to use the inbound data. This involves processing the incoming data as quickly as possible. The faster the
+data is processed, the less time it spends in the cache, making room for new incoming data, Techniques to achieve this could include
+batch processing, parallel processing, and efficient queue management.
+
+Reducing the working set of the application. The working set of an application is the set of pages in system memory that are
+currently in use. Reducing the working of the application set can help ensure that a higher percentage of accesses are cache hits. For
+example, if an application uses circular buffers to manage 1/0 traffic one could experiment with reducing the size of the buffers.
+Increasing 1/0 LLC ways. In Intel® Xeon® processors, I/O LLC ways are the LLC ways designated for Intel® DDIO to allocate new
+inbound write data in the event of an inbound write LLC miss, Increasing the I/O LLC ways effectively increases the LLC cache size that
+can be used by Intel® DDIO for inbound writes, potentially improving cache hit rates.
+
+5 Analyzing Performance of an I/O Workload in Context of Intel® DDIO
+
+5.1 Iperf Workload Overview
+
+In the following section, we demonstrate how enhancing the effectiveness of Intel® DDIO can significantly improve the performance of an
+1/0 workload on an Intel server. We utilize an iperf3 workload as a representative case study. Iperf3 is a widely used tool for measuring the
+performance of a computer network. It follows a client-server model where the client sends network traffic to the server. In our analysis, we
+run instances of iperf3 clients and iperf3 servers on the same server to generate bidirectional network traffic. Iperf3 relies on the kernel
+networking stack of the operating system to handle the sending and receiving of TCP packets. The kernel networking stack manages
+network connections, packet routing, buffer management, and other low-level networking operations.
+
+https:/Avww.intel,com/content/www/us/en/developer/articles/technical/ddio-analysis-performance-monitoring.html 15/22
+

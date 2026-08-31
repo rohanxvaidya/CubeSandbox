@@ -1,0 +1,59 @@
+4/12/26, 6:14 AM
+
+Event Name
+
+UNC_M_CAS_COUNT.RD
+
+UNC_M_CAS_COUNT.WR
+
+3.3.2 IMC PerfMon Metrics
+
+Metric Name
+
+memory_bandwidth_read
+
+memory_bandwidth_write
+
+memory_bandwidth_total
+
+Intel® Data Direct VO Technology Performance Monitoring
+
+Description
+
+All DRAM read CAS commands issued (including underfills that are required for partial writes)
+
+All DRAM write CAS commands issued.
+
+Table 5: IMC CAS Read and Write
+
+Formula
+
+UNC_M_CAS_COUNT.RD * 64 / 1000000 / SECONDS
+
+UNC_M_CAS_COUNT.WR * 64 / 1000000 / SECONDS,
+
+(UNC_M_CAS_COUNT.RD + UNC_M_CAS_COUNT.WR) * 64/
+
+1000000 / SECONDS
+
+Table 6: Memory Bandwidth Metrics
+
+3.4 PerfMon Event to I/O Flow Decoder
+
+The following figure maps PerfMon events to inbound/upstream I/O flows:
+
+https:/Avww.intel,com/content/www/us/en/developer/articles/technical/ddio-analysis-performance-monitoring.html
+
+Description
+
+DDR memory read bandwidth
+(MB/sec)
+
+DDR memory write bandwidth
+(MB/sec)
+
+DDR memory total bandwidth
+(MB/sec)
+
+13/22
+

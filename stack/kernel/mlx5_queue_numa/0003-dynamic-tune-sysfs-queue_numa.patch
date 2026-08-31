@@ -1,0 +1,396 @@
+From ece9353b94a9ff82a69b7fab5e57dc1d0e14e156 Mon Sep 17 00:00:00 2001
+From: mz <mz@localhost>
+Date: Thu, 21 May 2026 23:42:45 -0400
+Subject: [PATCH 3/3] dynamic tune, sysfs queue_numa
+
+---
+ drivers/net/ethernet/mellanox/mlx5/core/eq.c  |  42 +++-
+ .../net/ethernet/mellanox/mlx5/core/main.c    | 217 ++++++++++++++++++
+ include/linux/mlx5/driver.h                   |   1 +
+ include/linux/mlx5/eq.h                       |   1 +
+ 4 files changed, 259 insertions(+), 2 deletions(-)
+
+diff --git a/drivers/net/ethernet/mellanox/mlx5/core/eq.c b/drivers/net/ethernet/mellanox/mlx5/core/eq.c
+index 33d041b3135d..3863555836d0 100644
+--- a/drivers/net/ethernet/mellanox/mlx5/core/eq.c
++++ b/drivers/net/ethernet/mellanox/mlx5/core/eq.c
+@@ -286,7 +286,7 @@ create_map_eq(struct mlx5_core_dev *dev, struct mlx5_eq *eq,
+ 	eq->cons_index = 0;
+ 
+ 	err = mlx5_frag_buf_alloc_node(dev, wq_get_byte_sz(log_eq_size, log_eq_stride),
+-				       &eq->frag_buf, dev->priv.numa_node);
++				       &eq->frag_buf, param->numa_node);
+ 	if (err)
+ 		return err;
+ 
+@@ -668,6 +668,7 @@ static int create_async_eqs(struct mlx5_core_dev *dev)
+ 	param = (struct mlx5_eq_param) {
+ 		.irq = table->ctrl_irq,
+ 		.nent = MLX5_NUM_CMD_EQE,
++		.numa_node = dev->priv.numa_node,
+ 		.mask[0] = 1ull << MLX5_EVENT_TYPE_CMD,
+ 	};
+ 	mlx5_cmd_allowed_opcode(dev, MLX5_CMD_OP_CREATE_EQ);
+@@ -681,6 +682,7 @@ static int create_async_eqs(struct mlx5_core_dev *dev)
+ 	param = (struct mlx5_eq_param) {
+ 		.irq = table->ctrl_irq,
+ 		.nent = async_eq_depth_devlink_param_get(dev),
++		.numa_node = dev->priv.numa_node,
+ 	};
+ 
+ 	gather_async_events_mask(dev, param.mask);
+@@ -691,6 +693,7 @@ static int create_async_eqs(struct mlx5_core_dev *dev)
+ 	param = (struct mlx5_eq_param) {
+ 		.irq = table->ctrl_irq,
+ 		.nent = /* TODO: sriov max_vf + */ 1,
++		.numa_node = dev->priv.numa_node,
+ 		.mask[0] = 1ull << MLX5_EVENT_TYPE_PAGE_REQUEST,
+ 	};
+ 
+@@ -1018,6 +1021,7 @@ static int create_comp_eq(struct mlx5_core_dev *dev, u16 vecidx)
+ 	struct mlx5_eq_param param = {};
+ 	struct mlx5_eq_comp *eq;
+ 	struct mlx5_irq *irq;
++	int eq_node;
+ 	int nent;
+ 	int err;
+ 
+@@ -1028,13 +1032,24 @@ static int create_comp_eq(struct mlx5_core_dev *dev, u16 vecidx)
+ 		return -ENOMEM;
+ 	}
+ 
++	/* Determine NUMA node for this comp EQ's allocations */
++	{
++		extern int mlx5_queue_numa_map[];
++		extern int mlx5_queue_numa_map_len;
++		if (vecidx < mlx5_queue_numa_map_len &&
++		    mlx5_queue_numa_map[vecidx] != NUMA_NO_NODE)
++			eq_node = mlx5_queue_numa_map[vecidx];
++		else
++			eq_node = dev->priv.numa_node;
++	}
++
+ 	err = comp_irq_request(dev, vecidx);
+ 	if (err)
+ 		return err;
+ 
+ 	nent = comp_eq_depth_devlink_param_get(dev);
+ 
+-	eq = kzalloc_node(sizeof(*eq), GFP_KERNEL, dev->priv.numa_node);
++	eq = kzalloc_node(sizeof(*eq), GFP_KERNEL, eq_node);
+ 	if (!eq) {
+ 		err = -ENOMEM;
+ 		goto clean_irq;
+@@ -1050,6 +1065,7 @@ static int create_comp_eq(struct mlx5_core_dev *dev, u16 vecidx)
+ 	param = (struct mlx5_eq_param) {
+ 		.irq = irq,
+ 		.nent = nent,
++		.numa_node = eq_node,
+ 	};
+ 
+ 	err = create_map_eq(dev, &eq->core, &param);
+@@ -1104,6 +1120,28 @@ int mlx5_comp_eqn_get(struct mlx5_core_dev *dev, u16 vecidx, int *eqn)
+ }
+ EXPORT_SYMBOL(mlx5_comp_eqn_get);
+ 
++int mlx5_comp_eq_rebuild(struct mlx5_core_dev *dev, u16 vecidx)
++{
++	struct mlx5_eq_table *table = dev->priv.eq_table;
++	struct mlx5_eq_comp *eq;
++	int ret;
++
++	mutex_lock(&table->comp_lock);
++	eq = xa_load(&table->comp_eqs, vecidx);
++	if (!eq) {
++		/* EQ doesn't exist yet (lazy creation), just update map */
++		mutex_unlock(&table->comp_lock);
++		return 0;
++	}
++
++	destroy_comp_eq(dev, eq, vecidx);
++	ret = create_comp_eq(dev, vecidx);
++	mutex_unlock(&table->comp_lock);
++
++	return ret < 0 ? ret : 0;
++}
++EXPORT_SYMBOL(mlx5_comp_eq_rebuild);
++
+ int mlx5_comp_irqn_get(struct mlx5_core_dev *dev, int vector, unsigned int *irqn)
+ {
+ 	struct mlx5_eq_table *table = dev->priv.eq_table;
+diff --git a/drivers/net/ethernet/mellanox/mlx5/core/main.c b/drivers/net/ethernet/mellanox/mlx5/core/main.c
+index e25a1354a92b..5cff54f9e30d 100644
+--- a/drivers/net/ethernet/mellanox/mlx5/core/main.c
++++ b/drivers/net/ethernet/mellanox/mlx5/core/main.c
+@@ -39,6 +39,8 @@
+ #include <linux/slab.h>
+ #include <linux/interrupt.h>
+ #include <linux/delay.h>
++#include <linux/netdevice.h>
++#include <linux/rtnetlink.h>
+ #include <linux/mlx5/driver.h>
+ #include <linux/mlx5/cq.h>
+ #include <linux/mlx5/qp.h>
+@@ -179,6 +181,214 @@ static void mlx5_parse_queue_numa(void)
+ 	}
+ }
+ 
++static ssize_t queue_numa_show(struct device *device,
++			       struct device_attribute *attr, char *buf)
++{
++	int i, len = 0;
++	int run_start, cur_node;
++
++	if (mlx5_queue_numa_map_len == 0)
++		return sysfs_emit(buf, "(not configured)\n");
++
++	cur_node = mlx5_queue_numa_map[0];
++	run_start = 0;
++	for (i = 1; i <= mlx5_queue_numa_map_len; i++) {
++		int n = (i < mlx5_queue_numa_map_len) ?
++			mlx5_queue_numa_map[i] : -2;
++		if (n != cur_node) {
++			if (run_start == i - 1)
++				len += sysfs_emit_at(buf, len, "%d:%d",
++						     run_start, cur_node);
++			else
++				len += sysfs_emit_at(buf, len, "%d-%d:%d",
++						     run_start, i - 1, cur_node);
++			cur_node = n;
++			run_start = i;
++			if (i < mlx5_queue_numa_map_len)
++				len += sysfs_emit_at(buf, len, ",");
++		}
++	}
++	len += sysfs_emit_at(buf, len, "\n");
++	return len;
++}
++
++static ssize_t queue_numa_store(struct device *device,
++				struct device_attribute *attr,
++				const char *buf, size_t count)
++{
++	struct pci_dev *pdev = to_pci_dev(device);
++	struct mlx5_core_dev *dev = pci_get_drvdata(pdev);
++	struct net_device *netdev = NULL;
++	char *str, *cur;
++	int start, end, node, i;
++	int *new_map;
++	int new_len = 0;
++	bool need_rebuild = false;
++	bool was_up = false;
++
++	new_map = kvmalloc_array(MLX5_MAX_QUEUE_NUMA, sizeof(int), GFP_KERNEL);
++	if (!new_map)
++		return -ENOMEM;
++
++	/* Parse into temporary map first */
++	for (i = 0; i < MLX5_MAX_QUEUE_NUMA; i++)
++		new_map[i] = NUMA_NO_NODE;
++
++	str = kstrdup(buf, GFP_KERNEL);
++	if (!str) {
++		kvfree(new_map);
++		return -ENOMEM;
++	}
++
++	/* Strip trailing newline */
++	i = strlen(str);
++	if (i > 0 && str[i - 1] == '\n')
++		str[i - 1] = '\0';
++
++	if (!*str) {
++		kfree(str);
++		kvfree(new_map);
++		return -EINVAL;
++	}
++
++	cur = str;
++	while (cur && *cur) {
++		char *comma = strchr(cur, ',');
++		char *colon, *dash;
++
++		if (comma)
++			*comma = '\0';
++
++		colon = strchr(cur, ':');
++		if (!colon)
++			goto parse_next;
++
++		*colon = '\0';
++		if (kstrtoint(colon + 1, 10, &node) || node < 0 ||
++		    node >= nr_node_ids || !node_online(node))
++			goto parse_next;
++
++		dash = strchr(cur, '-');
++		if (dash) {
++			*dash = '\0';
++			if (kstrtoint(cur, 10, &start) || kstrtoint(dash + 1, 10, &end))
++				goto parse_next;
++		} else {
++			if (kstrtoint(cur, 10, &start))
++				goto parse_next;
++			end = start;
++		}
++
++		if (start < 0 || end < start || end >= MLX5_MAX_QUEUE_NUMA)
++			goto parse_next;
++
++		for (i = start; i <= end; i++)
++			new_map[i] = node;
++		if (end + 1 > new_len)
++			new_len = end + 1;
++parse_next:
++		cur = comma ? comma + 1 : NULL;
++	}
++	kfree(str);
++
++	if (new_len == 0) {
++		kvfree(new_map);
++		return -EINVAL;
++	}
++
++	/* Check if any queue actually needs NUMA change */
++	for (i = 0; i < new_len; i++) {
++		if (new_map[i] != mlx5_queue_numa_map[i]) {
++			need_rebuild = true;
++			break;
++		}
++	}
++
++	if (!need_rebuild) {
++		dev_info(&pdev->dev, "queue_numa: no changes needed\n");
++		kvfree(new_map);
++		return count;
++	}
++
++	/*
++	 * CRITICAL: Must close netdev BEFORE rebuilding EQs.
++	 * Channels use EQs for CQ completion; destroying an EQ while
++	 * a channel is active causes use-after-free and softlockup.
++	 */
++	mutex_lock(&dev->mlx5e_res.uplink_netdev_lock);
++	netdev = dev->mlx5e_res.uplink_netdev;
++	if (netdev)
++		dev_hold(netdev);
++	mutex_unlock(&dev->mlx5e_res.uplink_netdev_lock);
++
++	if (netdev && (netdev->flags & IFF_UP)) {
++		dev_info(&pdev->dev,
++			 "queue_numa: closing %s before EQ rebuild\n",
++			 netdev->name);
++		rtnl_lock();
++		dev_close(netdev);
++		rtnl_unlock();
++		was_up = true;
++	}
++
++	/* Update map length FIRST so comp_irq_request_pci sees the new values
++	 * during rebuild (it checks vecidx < mlx5_queue_numa_map_len).
++	 */
++	if (new_len > mlx5_queue_numa_map_len)
++		mlx5_queue_numa_map_len = new_len;
++
++	/* Now safe to rebuild EQs - no channels are using them */
++	for (i = 0; i < new_len; i++) {
++		if (new_map[i] != mlx5_queue_numa_map[i]) {
++			mlx5_queue_numa_map[i] = new_map[i];
++			if (mlx5_comp_eq_rebuild(dev, i))
++				dev_warn(&pdev->dev,
++					 "queue_numa: EQ %d rebuild failed\n", i);
++		}
++	}
++	mlx5_queue_numa_map_len = new_len;
++	kvfree(new_map);
++
++	/* Reopen netdev if it was UP - channels will use new NUMA/CPUs */
++	if (was_up && netdev) {
++		int num_queues, qi;
++
++		dev_info(&pdev->dev,
++			 "queue_numa: reopening %s after EQ rebuild\n",
++			 netdev->name);
++		rtnl_lock();
++		dev_open(netdev, NULL);
++
++		/* Update XPS to match new IRQ affinities.
++		 * Without this, cores whose comp vector moved will have no XPS
++		 * mapping and fall back to hash-based queue selection, causing
++		 * TX and NAPI completion to run on different cores (SQ HITM).
++		 */
++		num_queues = min_t(int, netdev->real_num_tx_queues,
++				   mlx5_comp_vectors_max(dev));
++		for (qi = 0; qi < num_queues; qi++) {
++			int cpu = mlx5_comp_vector_get_cpu(dev, qi);
++
++			if (cpu >= nr_cpu_ids)
++				continue;
++			netif_set_xps_queue(netdev, cpumask_of(cpu), qi);
++		}
++		dev_info(&pdev->dev,
++			 "queue_numa: updated XPS for %d queues\n", num_queues);
++
++		rtnl_unlock();
++	}
++
++	if (netdev)
++		dev_put(netdev);
++
++	dev_info(&pdev->dev, "queue_numa: updated %d queues\n",
++		 mlx5_queue_numa_map_len);
++	return count;
++}
++
++static DEVICE_ATTR_RW(queue_numa);
++
+ static unsigned int prof_sel = MLX5_DEFAULT_PROF;
+ module_param_named(prof_sel, prof_sel, uint, 0444);
+ MODULE_PARM_DESC(prof_sel, "profile selector. Valid range 0 - 2");
+@@ -2053,6 +2263,11 @@ static int probe_one(struct pci_dev *pdev, const struct pci_device_id *id)
+ 
+ 	pci_save_state(pdev);
+ 	devlink_register(devlink);
++
++	err = device_create_file(&pdev->dev, &dev_attr_queue_numa);
++	if (err)
++		dev_warn(&pdev->dev, "failed to create queue_numa sysfs: %d\n", err);
++
+ 	return 0;
+ 
+ err_init_one:
+@@ -2072,6 +2287,8 @@ static void remove_one(struct pci_dev *pdev)
+ 	struct mlx5_core_dev *dev  = pci_get_drvdata(pdev);
+ 	struct devlink *devlink = priv_to_devlink(dev);
+ 
++	device_remove_file(&pdev->dev, &dev_attr_queue_numa);
++
+ 	set_bit(MLX5_BREAK_FW_WAIT, &dev->intf_state);
+ 	/* mlx5_drain_fw_reset() and mlx5_drain_health_wq() are using
+ 	 * devlink notify APIs.
+diff --git a/include/linux/mlx5/driver.h b/include/linux/mlx5/driver.h
+index 41f03b352401..0697be39c23e 100644
+--- a/include/linux/mlx5/driver.h
++++ b/include/linux/mlx5/driver.h
+@@ -1069,6 +1069,7 @@ void mlx5_unregister_debugfs(void);
+ void mlx5_fill_page_frag_array_perm(struct mlx5_frag_buf *buf, __be64 *pas, u8 perm);
+ void mlx5_fill_page_frag_array(struct mlx5_frag_buf *frag_buf, __be64 *pas);
+ int mlx5_comp_eqn_get(struct mlx5_core_dev *dev, u16 vecidx, int *eqn);
++int mlx5_comp_eq_rebuild(struct mlx5_core_dev *dev, u16 vecidx);
+ int mlx5_core_attach_mcg(struct mlx5_core_dev *dev, union ib_gid *mgid, u32 qpn);
+ int mlx5_core_detach_mcg(struct mlx5_core_dev *dev, union ib_gid *mgid, u32 qpn);
+ 
+diff --git a/include/linux/mlx5/eq.h b/include/linux/mlx5/eq.h
+index 3705a382276b..c08d2103e736 100644
+--- a/include/linux/mlx5/eq.h
++++ b/include/linux/mlx5/eq.h
+@@ -14,6 +14,7 @@ struct mlx5_core_dev;
+ 
+ struct mlx5_eq_param {
+ 	int            nent;
++	int            numa_node;
+ 	u64            mask[4];
+ 	struct mlx5_irq *irq;
+ };
+-- 
+2.52.0
+

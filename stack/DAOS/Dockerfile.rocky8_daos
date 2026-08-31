@@ -1,0 +1,220 @@
+# rocky-daos-dev
+
+# Docker to build an image of rockylinux 8 based
+# environment for building the DAOS project.
+#
+
+ARG OS_VER=8
+ARG OS_IMAGE=rockylinux/rockylinux
+ARG BASE_DISTRO=${OS_IMAGE}:${OS_VER}
+ARG WORK_PATH=/home/daos/
+ARG CODE_PATH=${WORK_PATH}/daos/
+ARG BUILD_PRE=${WORK_PATH}/pre
+
+# Pull base image
+FROM $BASE_DISTRO as basic
+LABEL maintainer="michael.m.zhang@intel.com"
+# Needed for later use of BASE_DISTRO
+ENV BASE_DISTRO=${BASE_DISTRO}
+
+# RUN dnf group install -y "C Development Tools and Libraries"
+RUN dnf update -y && dnf group install -y "Development Tools" && \ 
+    dnf install -y golang pixman pixman-devel zlib zlib-devel python3 \
+    bzip2 bzip2-devel acpica-tools pkgconf-pkg-config libaio libaio-devel \
+    liburing libzstd libzstd-devel libgudev \
+    libssh libssh-devel kernel-devel numactl numactl-devel libpmem libpmem-devel \
+    daxctl daxctl-devel genisoimage libslirp libslirp-devel dbus-daemon perl \
+    libgcrypt libgcrypt-devel libpng libpng-devel 
+
+# for ssh access to docker container.
+RUN dnf install -y openssh-server openssh-clients passwd net-tools
+
+RUN dnf config-manager --set-enabled powertools
+
+# Intermittent cache-bust.  Used to reduce load on the actual CB1 later.
+ARG CB0
+
+ARG REPO_FILE_URL
+ARG STACK_REPO="https://github.com/daos-stack/daos.git"
+ARG BRANCH="v2.6.0 "
+
+ENV WORK_PATH=/home/daos/
+ARG MAJOR_VER=${OS_VER}
+
+RUN mkdir -p ${WORK_PATH} && cd ${WORK_PATH} && \
+    git clone -b ${BRANCH} ${STACK_REPO} daos && cd daos && \
+    git submodule update --init && \
+    cp ./utils/scripts/install-el8.sh /tmp/install.sh && \
+    cp ./utils/scripts/helpers/repo-helper-el8.sh /tmp/repo-helper.sh && \
+    cp ./utils/scripts/helpers/daos-server-user-setup.sh /tmp/daos-server-user-setup.sh && \
+    cp ./utils/scripts/helpers/distro_info.sh /tmp/distro_info.sh 
+
+# # script to install OS updates basic tools and daos dependencies
+# COPY ./utils/scripts/install-el8.sh /tmp/install.sh
+# # script to setup local repo if available
+# COPY ./utils/scripts/helpers/repo-helper-el8.sh /tmp/repo-helper.sh
+
+RUN chmod +x /tmp/repo-helper.sh /tmp/install.sh /tmp/distro_info.sh && \
+    /tmp/distro_info.sh && /tmp/repo-helper.sh && echo $BASE_DISTRO
+#    rm -f /tmp/repo-helper.sh
+
+FROM basic
+ARG WORK_PATH=/home/daos/
+ARG CODE_PATH=${WORK_PATH}/daos/
+ARG BUILD_PRE=${WORK_PATH}/pre
+
+WORKDIR /home/daos/daos/
+# Install OS updates and package.  Include basic tools and daos dependencies
+RUN dnf upgrade &&        \
+    /tmp/install.sh &&    \
+    dnf clean all 
+#    rm -f /tmp/install.sh
+
+# Add DAOS users
+ARG UID=1000
+# COPY ./utils/scripts/helpers/daos-server-user-setup.sh \
+#      /tmp/daos-server-user-setup.sh
+RUN set -e;                                    \
+    chmod +x /tmp/daos-server-user-setup.sh && \
+    /tmp/daos-server-user-setup.sh
+RUN useradd --no-log-init --user-group --create-home --shell /bin/bash daos_agent
+RUN echo "daos_agent:daos_agent" | chpasswd
+
+# Create directory for DAOS backend storage
+RUN mkdir -p /opt/daos /mnt/daos /var/run/daos_server /var/run/daos_agent /home/daos/pre /home/daos/daos &&   \
+    chown -R daos_server.daos_server /opt/daos /mnt/daos /var/run/daos_server /home/daos &&  \
+    chown daos_agent.daos_agent /var/run/daos_agent
+
+
+USER daos_server:daos_server
+
+# Setup a python venv so that python packages can be installed locally.
+RUN python3 -m venv /home/daos/venv
+ENV PATH=/home/daos/venv/bin:$PATH
+ENV VIRTUAL_ENV=/home/daos/venv/
+
+# Install latest versions of python tools.
+# COPY requirements-build.txt requirements-utest.txt ./
+RUN python3 -m pip --no-cache-dir install --upgrade pip && \
+    python3 -m pip --no-cache-dir install -r requirements-build.txt -r requirements-utest.txt
+
+WORKDIR ${BUILD_PRE}
+RUN mkdir -p ${BUILD_PRE}/site_scons/ ${BUILD_PRE}/utils/ && \
+    cp ${CODE_PATH}/SConstruct ${BUILD_PRE}/. && \
+    cp -r ${CODE_PATH}/site_scons/prereq_tools ${BUILD_PRE}/site_scons/ && \
+    cp -r ${CODE_PATH}/site_scons/components ${BUILD_PRE}/site_scons/ && \
+    cp ${CODE_PATH}/utils/build.config ${BUILD_PRE}/utils/
+
+# COPY --chown=daos_server:daos_server SConstruct .
+# COPY --chown=daos_server:daos_server site_scons/prereq_tools site_scons/prereq_tools
+# COPY --chown=daos_server:daos_server site_scons/components site_scons/components
+# COPY --chown=daos_server:daos_server utils/build.config utils/
+
+# Control what to build.  By default Dockerfiles build everything to allow for
+# ease-of-use for users, however in CI everything is turned off and then
+# selectively enabled.  Turning off any step disables all future steps.
+ARG DAOS_DEPS_BUILD=yes
+# keep the build folder and result?
+ARG DAOS_KEEP_BUILD=yes
+# release/debug
+ARG DAOS_TARGET_TYPE=release   
+ARG DAOS_KEEP_SRC=yes
+
+# Now do an update to ensure software is up to date for the deps build.  If the
+# src hasn't changed then this won't do anything, but if it has then we want to
+# ensure that latest dependencies are used.
+USER root:root
+RUN [ "$DAOS_DEPS_BUILD" != "yes" ] || {                                               \
+        dnf upgrade --exclude=spdk,spdk-devel,dpdk-devel,dpdk,mercury-devel,mercury && \
+        dnf clean all;                                                                 \
+    }
+USER daos_server:daos_server
+
+ARG DEPS_JOBS=1
+
+RUN [ "$DAOS_DEPS_BUILD" != "yes" ] || {                            \
+        scons --build-deps=only --jobs $DEPS_JOBS PREFIX=/opt/daos  \
+              TARGET_TYPE=$DAOS_TARGET_TYPE &&                      \
+        ([ "$DAOS_KEEP_BUILD" != "no" ] || /bin/rm -rf build *.gz); \
+    }
+USER root:root
+
+# force an upgrade to get any newly built RPMs, but only if CB1 is set.
+ARG CB1
+RUN [ -z "$CB1" ] || {                                                           \
+        dnf upgrade --exclude=spdk,spdk-devel,dpdk-devel,dpdk,mercury-devel,mercury && \
+        dnf clean all;                                                                 \
+    }
+USER daos_server:daos_server
+
+# Set a label.  This is useful for searching for DAOS images, but is also used
+# in github-actions to prune elements of the dockerfile below this point.
+LABEL DAOS=true
+
+WORKDIR /home/daos/daos/
+# COPY --chown=daos_server:daos_server VERSION LICENSE ftest.sh SConstruct requirements-ftest.txt .clang-format ./
+# COPY --chown=daos_server:daos_server site_scons site_scons
+# COPY --chown=daos_server:daos_server utils utils
+# COPY --chown=daos_server:daos_server src src
+
+# select compiler to use
+ARG COMPILER=gcc
+ARG JOBS=$DEPS_JOBS
+ARG DAOS_BUILD_TYPE=$DAOS_TARGET_TYPE
+ARG DAOS_BUILD=$DAOS_DEPS_BUILD
+
+# Build DAOS
+RUN [ "$DAOS_BUILD" != "yes" ] || {                                        \
+        scons --jobs $JOBS install PREFIX=/opt/daos COMPILER=$COMPILER     \
+              BUILD_TYPE=$DAOS_BUILD_TYPE TARGET_TYPE=$DAOS_TARGET_TYPE && \
+        ([ "$DAOS_KEEP_BUILD" != "no" ] || /bin/rm -rf build) &&           \
+        go clean -cache &&                                                 \
+        cp -r utils/config/examples /opt/daos;                             \
+    }
+
+RUN cd ${CODE_PATH} && . utils/sl/setup_local.sh && sudo --preserve-env=SL_PREFIX,SL_SPDK_PREFIX ./utils/setup_daos_server_helper.sh
+
+# Set environment variables
+ENV PATH=/opt/daos/bin:$PATH
+ENV FI_SOCKETS_MAX_CONN_RETRY=1
+
+# Build java and hadoop bindings
+WORKDIR /home/daos/daos/src/client/java
+
+#ARG DAOS_JAVA_BUILD=$DAOS_BUILD
+ARG DAOS_JAVA_BUILD=no
+
+RUN [ "$DAOS_JAVA_BUILD" != "yes" ] || {                                                      \
+        mkdir /home/daos/.m2 &&                                                               \
+        cp /home/daos/daos/utils/scripts/helpers/maven-settings.xml.in /home/daos/.m2/settings.xml &&      \
+        export JAVA_HOME=$(daos-java/find_java_home.sh) && \
+        mvn clean install -T 1C                                                               \
+            -B -Dorg.slf4j.simpleLogger.log.org.apache.maven.cli.transfer.Slf4jMavenTransferListener=warn \
+            -DskipITs -Dgpg.skip -Ddaos.install.path=/opt/daos;                               \
+    }
+WORKDIR ${WORK_PATH}
+
+# Remove local copy
+RUN [ "$DAOS_KEEP_SRC" != "no" ] || rm -rf /home/daos/daos /home/daos/pre
+
+COPY /scripts  ${WORK_PATH}/scripts
+COPY /config  ${WORK_PATH}/config
+USER root:root
+
+### Build FIO
+ARG FIO_VER="3.33" 
+ARG FIO_REPO="https://github.com/axboe/fio.git"
+RUN cd ${WORK_PATH}/ && git clone ${FIO_REPO} fio && \
+    cd fio && git checkout fio-${FIO_VER} && \
+    CFLAGS="-I/opt/daos/include/" LDFLAGS="-L/opt/daos/lib64/" ./configure && \
+    make && make install
+
+ENV LD_LIBRARY_PATH=/opt/daos/lib64/:$LD_LIBRARY_PATH
+#ENV LD_PRELOAD=/opt/daos/lib64/libioil.so:$LD_PRELOAD
+ENV LD_PRELOAD=/opt/daos/lib64/libpil4dfs.so:$LD_PRELOAD
+RUN chmod +x ${WORK_PATH}/scripts/*.sh
+RUN mkdir -p /etc/daos && \
+    mkdir -p /var/run/daos_server && \
+    mkdir -p /var/daos/config && \
+    mkdir -p /mnt/daos && \	
+    mkdir -p /var/run/daos_agent

@@ -1,0 +1,565 @@
+From b9f3c8413875631837dabb1db381431a434da277 Mon Sep 17 00:00:00 2001
+From: root <root@spr-inspur-22.sh.intel.com>
+Date: Mon, 17 Feb 2025 14:30:55 +0800
+Subject: [PATCH 2/3] proxy DB cpu POC
+
+---
+ Makefile                                      |   2 +-
+ .../net/ethernet/mellanox/mlx5/core/en_main.c |  14 +-
+ .../net/ethernet/mellanox/mlx5/core/en_txrx.c | 363 +++++++++++++++++-
+ .../ethernet/mellanox/mlx5/core/lag/debugfs.c |  60 +++
+ include/linux/mlx5/driver.h                   |   1 +
+ 5 files changed, 432 insertions(+), 8 deletions(-)
+
+diff --git a/Makefile b/Makefile
+index a33d586905cb..210c3c5bbbb8 100644
+--- a/Makefile
++++ b/Makefile
+@@ -2,7 +2,7 @@
+ VERSION = 6
+ PATCHLEVEL = 8
+ SUBLEVEL = 0
+-EXTRAVERSION = -lock-in-mlx
++EXTRAVERSION = -lock-in-mlx2
+ NAME = Hurr durr I'ma ninja sloth
+ 
+ # *DOCUMENTATION*
+diff --git a/drivers/net/ethernet/mellanox/mlx5/core/en_main.c b/drivers/net/ethernet/mellanox/mlx5/core/en_main.c
+index c8e8f512803e..911515bbd2ca 100644
+--- a/drivers/net/ethernet/mellanox/mlx5/core/en_main.c
++++ b/drivers/net/ethernet/mellanox/mlx5/core/en_main.c
+@@ -5616,6 +5616,13 @@ void mlx5e_set_rx_mode_work(struct work_struct *work)
+ 	return mlx5e_fs_set_rx_mode_work(priv->fs, priv->netdev);
+ }
+ 
++extern void mlx_proxy_doorbell_update(void);
++extern void nic_common_db_init(void);
++void mlx_update_db_work(struct work_struct *work)
++{
++	mlx_proxy_doorbell_update();
++}
++
+ /* mlx5e generic netdev management API (move to en_common.c) */
+ int mlx5e_priv_init(struct mlx5e_priv *priv,
+ 		    const struct mlx5e_profile *profile,
+@@ -5648,6 +5655,9 @@ int mlx5e_priv_init(struct mlx5e_priv *priv,
+ 	INIT_WORK(&priv->set_rx_mode_work, mlx5e_set_rx_mode_work);
+ 	INIT_WORK(&priv->tx_timeout_work, mlx5e_tx_timeout_work);
+ 	INIT_WORK(&priv->update_stats_work, mlx5e_update_stats_work);
++//	INIT_WORK(&mdev->update_db_work, mlx_update_db_work);
++
++	nic_common_db_init();
+ 
+ 	priv->wq = create_singlethread_workqueue("mlx5e");
+ 	if (!priv->wq)
+@@ -5746,7 +5756,7 @@ mlx5e_create_netdev(struct mlx5_core_dev *mdev, const struct mlx5e_profile *prof
+ 		mlx5_core_err(mdev, "alloc_etherdev_mqs() failed\n");
+ 		return NULL;
+ 	}
+-
++	nic_common_db_init();
+ 	err = mlx5e_priv_init(netdev_priv(netdev), profile, netdev, mdev);
+ 	if (err) {
+ 		mlx5_core_err(mdev, "mlx5e_priv_init failed, err=%d\n", err);
+@@ -6020,6 +6030,8 @@ static int _mlx5e_suspend(struct auxiliary_device *adev)
+ 
+ 	mlx5e_detach_netdev(priv);
+ 	mlx5e_destroy_mdev_resources(mdev);
++	//cancel_work_sync(&mdev->update_db_work);
++
+ 	return 0;
+ }
+ 
+diff --git a/drivers/net/ethernet/mellanox/mlx5/core/en_txrx.c b/drivers/net/ethernet/mellanox/mlx5/core/en_txrx.c
+index 34e588a9ae48..bd9dcd0ba162 100644
+--- a/drivers/net/ethernet/mellanox/mlx5/core/en_txrx.c
++++ b/drivers/net/ethernet/mellanox/mlx5/core/en_txrx.c
+@@ -38,8 +38,44 @@
+ #include "en/xsk/rx.h"
+ #include "en/xsk/tx.h"
+ #include "en_accel/ktls_txrx.h"
++#include <linux/percpu.h>
+ 
++// Worker threads
++static struct task_struct *thread_db;
+ 
++// Flag to signal threads to stop
++static bool threads_should_stop = false;
++static int thread_db_fn(void *data);
++long long db_counter = 1;
++
++static bool mlx_proxy_enable = false;
++
++int start_db_thread_function(void);
++void stop_db_thread_function(void);
++enum db_update_status {
++	DB_EMPTY = 0,
++	DB_NEW = 1,
++};
++
++struct mlx_db_action {
++	void __iomem *db_address;
++	__be32	*arm_db;
++	__be32 doorbell[2];	
++};
++
++struct nic_common_doorbell {
++	int status;  // NEW / EMPTY
++	int cpu_idx;
++	struct mlx_db_action rq_cq;
++	struct mlx_db_action icosq_cq;
++	struct mlx_db_action async_icosq_cq;
++	struct mlx_db_action xdpsq_cq;
++};
++
++static DEFINE_PER_CPU(struct nic_common_doorbell, mlx_common_doorbell_queue);
++
++static inline void mlx5_doorbell_update(struct mlx_db_action *db_action);
++void mlx_proxy_doorbell_update(void);
+ 
+ #include "diag/cmd_tracepoint.h"
+ 
+@@ -58,11 +94,307 @@ void mlx_cq_arms_lock_flag_set(int v)
+ 	mlx_cq_arms_lock_flag = v;
+ }
+ 
++
++static int mlx_proxy_db = 0;
++
++int mlx_proxy_db_flag_get(void)
++{
++	return mlx_proxy_db;
++}
++void mlx_proxy_db_flag_set(int v)
++{
++	mlx_proxy_db = v;
++}
++
++void nic_common_db_init(void)
++{
++	int cpu;
++
++	for_each_online_cpu(cpu) {
++		pr_info("init %d...\n", cpu);
++		per_cpu(mlx_common_doorbell_queue, cpu).status = DB_EMPTY;
++		per_cpu(mlx_common_doorbell_queue, cpu).cpu_idx = 0xFFFF;
++	}
++
++}
++
++// struct mlx_db_action {
++// 	void __iomem *db_address;
++// 	__be32	*arm_db;
++// 	__be32 doorbell[2];	
++// }
++static inline void mlx5e_cq_arm_fill(struct mlx5e_cq *cq, struct mlx_db_action *db_action)
++{
++	struct mlx5_core_cq *mcq;
++	u32 cmd = MLX5_CQ_DB_REQ_NOT;
++    void __iomem *uar_page;
++	void __iomem *doorbell_reg;
++    u32 cons_index;
++
++	mcq = &cq->mcq;
++
++	uar_page = mcq->uar->map;
++	cons_index = cq->wq.cc;
++
++	//__be32 doorbell[2];
++	u32 sn;
++	u32 ci;
++	__be32 cmd_arm_db;
++
++	sn = mcq->arm_sn & 3;
++	ci = cons_index & 0xffffff;
++
++	cmd_arm_db	= cpu_to_be32(sn << 28 | cmd | ci);
++
++	//*mcq->arm_db = cmd_arm_db;
++	db_action->arm_db = mcq->arm_db;
++
++	/* Make sure that the doorbell record in host memory is
++	 * written before ringing the doorbell via PCI MMIO.
++	 */
++	//wmb();
++
++	// doorbell[0] = cpu_to_be32(sn << 28 | cmd | ci);
++	// doorbell[1] = cpu_to_be32(mcq->cqn);
++	db_action->doorbell[0] = cpu_to_be32(sn << 28 | cmd | ci);
++	db_action->doorbell[1] = cpu_to_be32(mcq->cqn);
++// db_counter++;
++// if (db_counter%1000000 == 0)
++// 	pr_info("fill: db0=%d, db1=%d,", db_action->doorbell[0], db_action->doorbell[1]);
++
++	doorbell_reg = uar_page + MLX5_CQ_DOORBELL;
++	db_action->db_address = doorbell_reg;
++	//mlx5_write64(doorbell, uar_page + MLX5_CQ_DOORBELL);
++}
++
++static noinline void mlx5e_cq_arms_handle(struct mlx5e_channel *c)
++{
++	struct mlx5e_rq *rq = &c->rq;
++
++	mlx5e_cq_arm(&rq->cq);
++	mlx5e_cq_arm(&c->icosq.cq);
++	mlx5e_cq_arm(&c->async_icosq.cq);
++	mlx5e_cq_arm(&c->xdpsq.cq);
++
++}
++
++#define proxy_db_cpu	64
++long long db_counter2 = 1;
++/* revisit, smp_call_function_single should be enough for atomic mailbox! */
++static void mlx5_db_action_func(void *info)
++{
++	struct nic_common_doorbell *db_action_node = info;
++
++	if ( db_action_node->status == DB_NEW ) {
++			//handle the doorbell request
++			// if (db_counter%10000000 == 0)
++			// 	printk(KERN_INFO "node[%d], status : %d\n", cpu, db_action_node.status );
++
++			mlx5_doorbell_update(&db_action_node->rq_cq);
++			mlx5_doorbell_update(&db_action_node->icosq_cq);
++			mlx5_doorbell_update(&db_action_node->async_icosq_cq);
++			mlx5_doorbell_update(&db_action_node->xdpsq_cq);
++			db_counter++;
++			db_action_node->status = DB_EMPTY;
++
++			// if (db_counter%100000000 == 0)
++			// 	printk(KERN_INFO "Request db_counter : %llu \n", db_counter);
++	}
++// db_counter2++;
++// 			if (db_counter2%100000000 == 0)
++// 				printk(KERN_INFO "Request db_counter : %llu \n", db_counter2);
++	// *db_action->arm_db = db_action->doorbell[0];
++
++	// /* Make sure that the doorbell record in host memory is
++	// * written before ringing the doorbell via PCI MMIO.
++	// */
++	// wmb();
++
++	// // db_action->doorbell[0] = cpu_to_be32(sn << 28 | cmd | ci);
++	// // db_action->doorbell[1] = cpu_to_be32(mcq->cqn);
++	// mlx5_write64(db_action->doorbell, db_action->db_address);
++
++}
++
++static inline void call_cpu_proxy_handler(int cpu)
++{
++	int wait = 0;
++
++	struct nic_common_doorbell * current_db_action = this_cpu_ptr(&mlx_common_doorbell_queue);
++	smp_call_function_single(proxy_db_cpu, mlx5_db_action_func, current_db_action, wait);
++}
++
++//Handle one doorbell request;
++static inline void mlx5_doorbell_update(struct mlx_db_action *db_action)
++{
++	
++	//*mcq->arm_db = cmd_arm_db;
++	*db_action->arm_db = db_action->doorbell[0];
++
++	/* Make sure that the doorbell record in host memory is
++	* written before ringing the doorbell via PCI MMIO.
++	*/
++	wmb();
++
++	// db_action->doorbell[0] = cpu_to_be32(sn << 28 | cmd | ci);
++	// db_action->doorbell[1] = cpu_to_be32(mcq->cqn);
++
++	mlx5_write64(db_action->doorbell, db_action->db_address);
++	//if (db_counter%100000000 == 0)
++	//pr_info("update : db0=%d, db1=%d,\n", db_action->doorbell[0], db_action->doorbell[1]);
++
++}
++
++// used for irq thread to notify the proxy thread.
++void mlx5_fill_doorbell_notify(struct mlx5e_channel *c, struct nic_common_doorbell *current_db_action)
++{
++	struct mlx5e_rq *rq = &c->rq;
++	long timer = 0;
++	
++	while (current_db_action->status != DB_EMPTY){
++		// waiting until previous action is done. 
++		asm volatile("rep; nop");
++		//pr_info("waiting for DB action finish...\n");
++		//cpu_relax();
++		// if (timer++ > 1000000)
++		// 	printk(KERN_INFO "timeout for wait empty:[%llu]\n", timer);
++	}
++
++	//fill structure and notify the proxy thread;
++	//TODO:
++	mlx5e_cq_arm_fill(&rq->cq, &(current_db_action->rq_cq));
++	mlx5e_cq_arm_fill(&c->icosq.cq, &(current_db_action->icosq_cq) );
++	mlx5e_cq_arm_fill(&c->async_icosq.cq, &(current_db_action->async_icosq_cq) );
++	mlx5e_cq_arm_fill(&c->xdpsq.cq, &(current_db_action->xdpsq_cq) );
++
++	current_db_action->status = DB_NEW;
++
++	// while (current_db_action->status != DB_EMPTY){
++	// 	// waiting until current action is done. 
++	// 	asm volatile("rep; nop");
++	// }
++}
++
++long count1 = 1;
++
++// used for polling and update. 
++void mlx_proxy_doorbell_update(void)
++{
++	int cpu;
++	int core = mlx_proxy_db_flag_get();
++
++	printk(KERN_INFO "Start the proxy DB thread, %s, on cpu[%d]\n",__func__, core);
++
++	if (mlx_proxy_db)
++		mlx_proxy_enable = true;
++
++	while( mlx_proxy_enable) {
++
++		for_each_online_cpu(cpu) {
++			//struct nic_common_doorbell * db_action_node = (struct nic_common_doorbell *)&per_cpu(mlx_common_doorbell_queue, cpu);
++			struct nic_common_doorbell db_action_node = per_cpu(mlx_common_doorbell_queue, cpu);
++
++			if (db_action_node.cpu_idx != cpu ) {
++				if (count1++ % 10000000 == 0)
++					printk(KERN_INFO "invalid for cpu_node[%d]\n", cpu);
++				continue;
++			}
++			if ( db_action_node.status == DB_NEW ) {
++				//handle the doorbell request
++				// if (db_counter%10000000 == 0)
++				// 	printk(KERN_INFO "node[%d], status : %d\n", cpu, db_action_node.status );
++
++				mlx5_doorbell_update(&db_action_node.rq_cq);
++				mlx5_doorbell_update(&db_action_node.icosq_cq);
++				mlx5_doorbell_update(&db_action_node.async_icosq_cq);
++				mlx5_doorbell_update(&db_action_node.xdpsq_cq);
++				db_counter++;
++				db_action_node.status = DB_EMPTY;
++			}
++		}
++		yield();
++		asm volatile("rep; nop");
++		//cpu_relax();
++		//db_counter++;
++		//if (db_counter%10000000 == 0)
++		//	printk(KERN_INFO "Request db_counter : %llu \n", db_counter);
++		//usleep(1); 
++		udelay(1);
++	}
++
++	msleep(1000);  // sleep 1s .
++}
++
++// Thread function 
++static int thread_db_fn(void *data)
++{
++
++    while (!kthread_should_stop()) {
++        //mlx_proxy_doorbell_update();
++		yield();
++		msleep(1000);
++    }
++
++    pr_info("Thread doorbell loop exit...");
++    return 0;
++}
++
++// Function to stop threads
++void stop_db_thread_function(void)
++{
++    threads_should_stop = true;
++	mlx_proxy_enable = false;
++	msleep(10);
++    // Stop the worker threads
++    if (thread_db)
++        kthread_stop(thread_db);
++
++    pr_info("Threads stopped\n");
++}
++
++// Function to start threads
++int start_db_thread_function(void)
++{
++    int thread_count = 1, core_index = mlx_proxy_db_flag_get();
++    int num_cpus = num_online_cpus(); // Get the number of online CPUs
++
++    if (thread_count <= 0) {
++        pr_err("thread_count is not set or is invalid\n");
++        return -EINVAL;
++    }
++
++	if (core_index <= 0) {
++		pr_err("core index is not set or is invalid\n");
++        return -EINVAL;
++	} 
++return 0;
++	nic_common_db_init();
++
++    threads_should_stop = false;
++    pr_info("Start to run thread...");
++    // Start the worker threads
++    thread_db = kthread_create(thread_db_fn, NULL, "thread_proxy_db");
++    if (IS_ERR(thread_db)) {
++        pr_err("thread_proxy_db: failed to create thread\n");
++        return PTR_ERR(thread_db);
++    }
++
++    // Pin the thread to a specific CPU in round-robin fashion
++    kthread_bind(thread_db, (core_index - 1) % num_cpus);
++
++    // Start the thread
++    wake_up_process(thread_db);
++
++    pr_info("Threads started (thread_count = %d)\n", thread_count);
++    return 0;
++}
++
+ enum {
+ 	THIS_STATE_IDLE = 0,
+ 	THIS_STATE_RUN = 1,
+-}
+-volatile value1 = 0x5A;
++};
++
++volatile int value1 = 0x5A;
+ 
+ static int lock_local_var(void)
+ {
+@@ -283,10 +615,29 @@ int mlx5e_napi_poll(struct napi_struct *napi, int budget)
+ 		serialize();
+ 	}
+ 
+-	mlx5e_cq_arm(&rq->cq);
+-	mlx5e_cq_arm(&c->icosq.cq);
+-	mlx5e_cq_arm(&c->async_icosq.cq);
+-	mlx5e_cq_arm(&c->xdpsq.cq);
++		// mlx5e_cq_arm(&rq->cq);
++		// mlx5e_cq_arm(&c->icosq.cq);
++		// mlx5e_cq_arm(&c->async_icosq.cq);
++		// mlx5e_cq_arm(&c->xdpsq.cq);
++		//mlx5_fill_doorbell_notify(c);
++	//if (mlx_proxy_enable == false) {
++	if (mlx_proxy_db == 0) {
++		mlx5e_cq_arm(&rq->cq);
++		mlx5e_cq_arm(&c->icosq.cq);
++		mlx5e_cq_arm(&c->async_icosq.cq);
++		mlx5e_cq_arm(&c->xdpsq.cq);
++	} else {
++		// mlx5e_cq_arm(&rq->cq);
++		// mlx5e_cq_arm(&c->icosq.cq);
++		// mlx5e_cq_arm(&c->async_icosq.cq);
++		// mlx5e_cq_arm(&c->xdpsq.cq);
++		int current_cpu = smp_processor_id();
++
++		struct nic_common_doorbell * current_db_action = this_cpu_ptr(&mlx_common_doorbell_queue);
++		current_db_action->cpu_idx = current_cpu;
++		mlx5_fill_doorbell_notify(c, current_db_action);
++		call_cpu_proxy_handler(current_cpu);
++	}
+ 
+ 	// Put lock prefix or serialize instruction AFTER MMIO ops
+ 	if (mlx_cq_arms_lock_flag == 2) {
+diff --git a/drivers/net/ethernet/mellanox/mlx5/core/lag/debugfs.c b/drivers/net/ethernet/mellanox/mlx5/core/lag/debugfs.c
+index 197bcc033f9e..9b2eb760e2a4 100644
+--- a/drivers/net/ethernet/mellanox/mlx5/core/lag/debugfs.c
++++ b/drivers/net/ethernet/mellanox/mlx5/core/lag/debugfs.c
+@@ -165,6 +165,10 @@ DEFINE_SHOW_ATTRIBUTE(members);
+ 
+ extern int mlx_cq_arms_lock_flag_get(void);
+ extern void mlx_cq_arms_lock_flag_set(int v);
++extern int mlx_proxy_db_flag_get(void);
++extern void mlx_proxy_db_flag_set(int v);
++extern void stop_db_thread_function(void);
++extern int start_db_thread_function(void);
+ 
+ static int mlx_cq_arms_lock_flag_show(struct seq_file *file, void *priv)
+ {
+@@ -204,6 +208,60 @@ static ssize_t mlx_cq_arms_lock_flag_write(struct file *file, const char __user
+ DEFINE_SHOW_STORE_ATTRIBUTE(mlx_cq_arms_lock_flag);
+ 
+ 
++static int proxy_db_enable_show(struct seq_file *file, void *priv)
++{
++	struct mlx5_core_dev *dev = file->private;
++	struct mlx5_lag *ldev;
++	int flag;
++
++	ldev = mlx5_lag_dev(dev);
++	mutex_lock(&ldev->lock);
++	flag = mlx_proxy_db_flag_get();
++	mutex_unlock(&ldev->lock);
++
++	seq_printf(file, "%d\n", flag);
++
++	return 0;
++}
++
++static ssize_t proxy_db_enable_write(struct file *file, const char __user *userbuf, size_t count, loff_t *ppos)
++{
++	struct seq_file *seq_f = file->private_data;
++	struct mlx5_core_dev *dev = seq_f->private;
++	struct mlx5_lag *ldev;
++	int v, flag, ret;
++
++	ret = kstrtou32_from_user(userbuf, count, 10, &v);
++	if (ret)
++		return ret;
++
++	ldev = mlx5_lag_dev(dev);
++
++
++	if (v) {
++		printk(KERN_INFO "Start the DB proxy funtion... \n");
++		mutex_lock(&ldev->lock);
++		mlx_proxy_db_flag_set(v);
++		mutex_unlock(&ldev->lock);
++        //schedule_work(&dev->update_db_work);      // Start the operation loop
++		start_db_thread_function();
++	} else {
++		printk(KERN_INFO "Stop the DB proxy funtion... \n");
++		mutex_lock(&ldev->lock);
++		mlx_proxy_db_flag_set(v);
++		mutex_unlock(&ldev->lock);
++
++        //cancel_work_sync(&dev->update_db_work);      // stop the operation loop
++		stop_db_thread_function();
++
++
++
++	}
++	return count;
++}
++
++DEFINE_SHOW_STORE_ATTRIBUTE(proxy_db_enable);
++
+ void mlx5_ldev_add_debugfs(struct mlx5_core_dev *dev)
+ {
+ 	struct dentry *dbg;
+@@ -218,6 +276,8 @@ void mlx5_ldev_add_debugfs(struct mlx5_core_dev *dev)
+ 	debugfs_create_file("mapping", 0444, dbg, dev, &mapping_fops);
+ 	debugfs_create_file("members", 0444, dbg, dev, &members_fops);
+ 	debugfs_create_file("mlx_cq_arms_lock_flag", 0660, dbg, dev, &mlx_cq_arms_lock_flag_fops);
++	debugfs_create_file("proxy_db_enable", 0660, dbg, dev, &proxy_db_enable_fops);
++
+ }
+ 
+ void mlx5_ldev_remove_debugfs(struct dentry *dbg)
+diff --git a/include/linux/mlx5/driver.h b/include/linux/mlx5/driver.h
+index 41f03b352401..faf43a4d42e3 100644
+--- a/include/linux/mlx5/driver.h
++++ b/include/linux/mlx5/driver.h
+@@ -823,6 +823,7 @@ struct mlx5_core_dev {
+ 	struct blocking_notifier_head macsec_nh;
+ #endif
+ 	u64 num_ipsec_offloads;
++	struct work_struct         update_db_work;
+ };
+ 
+ struct mlx5_db {
+-- 
+2.43.0
+

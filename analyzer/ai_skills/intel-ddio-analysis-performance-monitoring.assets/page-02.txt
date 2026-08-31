@@ -1,0 +1,149 @@
+
+Inte Intel®
+Accelerator Accelerator
+UPILink Complex x16PCIES x16 PCIES X1GPCIES x1GPCIE5 Complex UPI Link
+
+  
+
+ 
+
+ 
+
+core |] LJ core |] core
+CHA/LLC[) CHAYLEE PF) CHALE PF) CHAJLLC
+
+I
+CHA/LLC |] CHA/LLC |) CHA/LLC |] CHA/LLC
+
+     
+
+ 
+
+ 
+
+ 
+
+ 
+
+= i = — —1— x
+Core Core Core core Core Core
+DpRS _ iI I
+CHA/LLC FF] CHA/LLC fF] CHA/LLC CHA/LLC |] CHA/LLC | | CHA/LLC
+x x x x x x
+core |] core Core Core core |} Core Core Core
+
+SHALL) ctajule | VeHartuc | enaytle CHA/LLC |] CHA/LLC |) CHA/LLC[') CHA/LLC
+
+ 
+
+ 
+
+Ce eee ere eae
+cHayutc f) cHayicc P} craic fF) cHa/LLc
+
+=
+
+CHA/LLC] | CHA/LLC |] CHA/LLC |] CHA/LLC
+
+Core |] core | Core Core
+CHA/LLC |] CHA/LLC |) CHA/LLC[') CHA/LLC
+
+==
+
+Core |} core |} Core |} core
+cHasitc FY cHayutc FY cra/iec FY cHayuLc
+
+ 
+
+ 
+
+ 
+
+ 
+
+Core core |] core |} core
+cHasute FM) cHayuic Ff cHa/iic FF cHA/LLc
+
+x x x
+Core Core Core
+CHA/LLC PF) CHA/LLC FF CHA/LLC ORS.
+x x x
+
+Core |} core |} core Core
+cHasitc  cHayitc FY cHayiic PF) CHALLE
+
+Core |} core |] coe |] core
+cHayitcf) crayutc FY} crayiic f} CHA/LLC
+
+x x x
+. Core Core Core
+coca CHA/LLC PY CHA/LLC f) CHA/LLC
+x x x
+
+core |) core |} cae Core
+cHayutc PF cHayitc FF} cuayiic f) cHasiic
+
+ 
+
+ 
+
+ 
+ 
+
+ 
+
+ 
+
+ 
+
+ 
+
+ 
+
+ 
+
+ 
+
+ 
+
+ 
+
+ 
+
+ 
+
+———
+
+ 
+
+ 
+
+ 
+
+ 
+
+ 
+
+ 
+
+ 
+
+ 
+
+  
+
+UPI Link Intel® x8 Gen3 X16 PCIEA Intel®
+Accelerator DMI Accelerator
+Complex Complex
+
+Figure 1: 4th Generation Intel® Xeon® Scalable Processors XCC High-level Block Diagram
+
+Key agents that communicate through the mesh to other agents and blocks include:
+«Core: Central Processing Unit (CPU) containing local level 1 (L1) and level 2 (L2) caches. Each core communicates with the uncore and
+LLC through the mesh.
++ CHA/LLC: Caching and Home Agent connects to the mesh and is the cache controller that handles all coherent memory requests in the
+uncore and maintains memory consistency across the system. Each CHA contains a Last Level Cache (LLC) “slice,” Memory addresses
+are hashed across the avallable CHAs, so a request from a core or I/O device will be directed to the appropriate CHA unit based on the
+
+https:/Avww.intel,com/contentiwww/us/en/developer/articles/technical/ddio-analysis-performance-monitoring.html 222
+

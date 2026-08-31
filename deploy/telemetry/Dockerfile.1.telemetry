@@ -1,0 +1,40 @@
+# linux-telemetry
+
+
+ARG OS_VER="stream8"
+ARG OS_IMAGE="quay.io/centos/centos"
+
+FROM ${OS_IMAGE}:${OS_VER}
+
+ARG  BASE_PATH=/opt/telemetry
+ARG  WORK_PATH=${BASE_PATH}/tools
+ARG  LOG_PATH=${BASE_PATH}/logs
+#ARG  INSTALL_PATH=${BASE_PATH}/install
+
+USER root
+RUN yum group install -y "Development Tools" && \
+    dnf module -y install python39 && \
+    alternatives --set python3 /usr/bin/python3.9 && \
+    yum -y install git make which gcc m4 wget unzip \ 
+    nmap-ncat net-tools procps sysstat numatop
+
+WORKDIR   ${WORK_PATH}
+
+# ARG FIO_VER="3.29"
+# ARG FIO_REPO="https://github.com/axboe/fio.git"
+
+# RUN git clone -b fio-${FIO_VER} ${FIO_REPO} fio && \
+#     cd fio && \
+#     ./configure && \
+#     make
+
+COPY ./deploy/telemetry/telemetry_entrypoint.sh ./
+COPY tools/* ./
+
+RUN chmod -R +x ./
+
+RUN mkdir -p ${LOG_PATH}
+RUN mkfifo /export-logs
+
+CMD ["./telemetry_entrypoint.sh"]
+

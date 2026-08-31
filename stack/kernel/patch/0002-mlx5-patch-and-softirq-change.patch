@@ -1,0 +1,114 @@
+From 2f163200e343a3ed1cae63f47828b7a405046db3 Mon Sep 17 00:00:00 2001
+From: root <root@gnr-bkc.sh.intel.com>
+Date: Tue, 11 Feb 2025 02:06:08 -0500
+Subject: [PATCH 2/2] mlx5 patch and softirq change
+
+---
+ Makefile                                     | 4 ++--
+ drivers/net/ethernet/mellanox/mlx5/core/cq.c | 7 ++++++-
+ drivers/net/ethernet/mellanox/mlx5/core/eq.c | 8 ++++----
+ kernel/softirq.c                             | 5 +++--
+ 4 files changed, 15 insertions(+), 9 deletions(-)
+
+diff --git a/Makefile b/Makefile
+index a33d586905cb..49f891fdd659 100644
+--- a/Makefile
++++ b/Makefile
+@@ -1,8 +1,8 @@
+ # SPDX-License-Identifier: GPL-2.0
+ VERSION = 6
+ PATCHLEVEL = 8
+-SUBLEVEL = 0
+-EXTRAVERSION = -lock-in-mlx
++SUBLEVEL = 1
++EXTRAVERSION = -lock-in-mlx-nvpatch
+ NAME = Hurr durr I'ma ninja sloth
+ 
+ # *DOCUMENTATION*
+diff --git a/drivers/net/ethernet/mellanox/mlx5/core/cq.c b/drivers/net/ethernet/mellanox/mlx5/core/cq.c
+index 4caa1b6f40ba..b14ff93a210a 100644
+--- a/drivers/net/ethernet/mellanox/mlx5/core/cq.c
++++ b/drivers/net/ethernet/mellanox/mlx5/core/cq.c
+@@ -38,7 +38,7 @@
+ #include "mlx5_core.h"
+ #include "lib/eq.h"
+ 
+-#define TASKLET_MAX_TIME 2
++#define TASKLET_MAX_TIME 10
+ #define TASKLET_MAX_TIME_JIFFIES msecs_to_jiffies(TASKLET_MAX_TIME)
+ 
+ void mlx5_cq_tasklet_cb(struct tasklet_struct *t)
+@@ -71,6 +71,7 @@ static void mlx5_add_cq_to_tasklet(struct mlx5_core_cq *cq,
+ {
+ 	unsigned long flags;
+ 	struct mlx5_eq_tasklet *tasklet_ctx = cq->tasklet_ctx.priv;
++	bool schedule_tasklet = false;
+ 
+ 	spin_lock_irqsave(&tasklet_ctx->lock, flags);
+ 	/* When migrating CQs between EQs will be implemented, please note
+@@ -80,9 +81,13 @@ static void mlx5_add_cq_to_tasklet(struct mlx5_core_cq *cq,
+ 	 */
+ 	if (list_empty_careful(&cq->tasklet_ctx.list)) {
+ 		mlx5_cq_hold(cq);
++		schedule_tasklet = list_empty(&tasklet_ctx->list);
+ 		list_add_tail(&cq->tasklet_ctx.list, &tasklet_ctx->list);
+ 	}
+ 	spin_unlock_irqrestore(&tasklet_ctx->lock, flags);
++
++	if (schedule_tasklet)
++		tasklet_schedule(&tasklet_ctx->task);
+ }
+ 
+ /* Callers must verify outbox status in case of err */
+diff --git a/drivers/net/ethernet/mellanox/mlx5/core/eq.c b/drivers/net/ethernet/mellanox/mlx5/core/eq.c
+index 40a6cb052a2d..d7d33db915cf 100644
+--- a/drivers/net/ethernet/mellanox/mlx5/core/eq.c
++++ b/drivers/net/ethernet/mellanox/mlx5/core/eq.c
+@@ -114,7 +114,7 @@ static int mlx5_eq_comp_int(struct notifier_block *nb,
+ 	struct mlx5_eq *eq = &eq_comp->core;
+ 	struct mlx5_eqe *eqe;
+ 	int num_eqes = 0;
+-	u32 cqn = -1;
++	//u32 cqn = -1;
+ 
+ 	eqe = next_eqe_sw(eq);
+ 	if (!eqe)
+@@ -122,7 +122,7 @@ static int mlx5_eq_comp_int(struct notifier_block *nb,
+ 
+ 	do {
+ 		struct mlx5_core_cq *cq;
+-
++		u32 cqn;
+ 		/* Make sure we read EQ entry contents after we've
+ 		 * checked the ownership bit.
+ 		 */
+@@ -147,8 +147,8 @@ static int mlx5_eq_comp_int(struct notifier_block *nb,
+ out:
+ 	eq_update_ci(eq, 1);
+ 
+-	if (cqn != -1)
+-		tasklet_schedule(&eq_comp->tasklet_ctx.task);
++	//if (cqn != -1)
++	//	tasklet_schedule(&eq_comp->tasklet_ctx.task);
+ 
+ 	return 0;
+ }
+diff --git a/kernel/softirq.c b/kernel/softirq.c
+index 210cf5f8d92c..f84b937a190c 100644
+--- a/kernel/softirq.c
++++ b/kernel/softirq.c
+@@ -471,8 +471,9 @@ asmlinkage __visible void do_softirq(void)
+  * we want to handle softirqs as soon as possible, but they
+  * should not be able to lock up the box.
+  */
+-#define MAX_SOFTIRQ_TIME  msecs_to_jiffies(2)
+-#define MAX_SOFTIRQ_RESTART 10
++//#define MAX_SOFTIRQ_TIME  msecs_to_jiffies(2)
++#define MAX_SOFTIRQ_TIME  msecs_to_jiffies(1)
++#define MAX_SOFTIRQ_RESTART 2
+ 
+ #ifdef CONFIG_TRACE_IRQFLAGS
+ /*
+-- 
+2.43.0
+

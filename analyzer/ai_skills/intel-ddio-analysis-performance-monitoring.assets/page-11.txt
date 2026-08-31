@@ -1,0 +1,58 @@
+4112126, 6:14 AM Intel® Data Direct I/O Technology Performance Monitoring
+3.2.1 IIO PerfMon Events
+The IIO unit PerfMon event set provides per 1/0 device observability (up to x4 bifurcation granularity) and is the only point of observability
+in the system with this information. The neighboring IRP unit loses this per 1/0 device resolution. Likewise, itis also the only unit where we
+
+can measure bandwidth at a finer resolution than 64 bytes. The IIO unit can accurately report data movement in up to 4-byte increments,
+while all other units like IRP, CHA, and IMC provide cache-line granularity of 64 bytes.
+
+The possible x4 bifurcations are represented in event names using “part numbers,” ranging from part0 to part7, supporting up to 8 x4
+bifurcations per M2IOSF. Rather than iterating event names for all eight parts, the event table below uses “n” to cover all possible parts.
+
+The following list details the most useful ITO events for correlating Intel® DDIO behavior back to I/O devices.
+
+Event Name Description
+UNC_II0_CLOCKTICKS Number of IIO clock cycles while the event is enabled
+UNC_lI0_TXN_REQ_OF_CPU.MEM Counts the number of write/posted transactions (TXN) requested of the CPU. These
+_WRITE.PART[O-7] are inbound/upstream writes initiated by the I/O device writing to coherent memory. It
+
+does not count how much data is moved, which can be up to one cache line.
+
+UNC_lIO_TXN_REQ_OF_CPU.MEM Counts the number of read/non-posted transactions (TXN) requested of the CPU
+These are inbound/upstream reads initiated by the I/O device reading from coherent
+memory. It does not count how much data is moved, which can be up to one cache
+
+ 
+
+line,
+UNC_II0_TXN_REQ_OF_CPU.CMPD Counts the number of completion transactions (TXN) sent to the CPU from 1/0.
+-PART[0-7] These are inbound/upstream completions initiated by the /O device in response to
+
+an outbound/downstream read request received from the CPU. It does not count how
+much data is moved, which can be up to one cache line.
+
+UNC_I10_TXN_REQ_BY_CPU.MEM Counts the number of write/posted transactions (TXN) requested of an I/O device.
+_WRITE.PART[0-7] These are outbound/downstream writes initiated by the CPU writing to an I/O device.
+It does not count how much data is moved, which can be 4 to 64 bytes.
+
+UNC_II0_TXN_REQ_BY_CPU.MEM Counts the number of read/non-posted transactions (TXN) requested of /O device.
+_READ.PART[0-7] These are outbound/downstream reads initiated by the CPU reading from an VO
+device. It does not count how much data is moved, which can be 4 to 64 bytes.
+
+UNC_IIO_DATA_REQ_OF_CPU.MEM Counts the number of DWORD (4 byte) writes sent upstream from I/O into the CPU
+_WRITE.PART[0-7] cache or memory.
+
+UNC_II0_DATA_REQ_OF_CPU.MEM Counts the number of DWORD (4 byte) reads from CPU cache or memory due to
+_READ.PART[0-7] upstream read requests initiated by /O.
+
+UNC_lI0_DATA_REQ_OF_CPU Counts the number of DWORD (4 byte) completions from I/O due to downstream
+-CMPD.PART[0-7] read requests initiated by the CPU.
+
+UNC_lI0_DATA_REQ_BY_CPU.MEM Counts the number of DWORD (4 byte) writes sent downstream from CPU to VO.
+
+_WRITE.PART[0-7]
+
+Table 3: M2IOSF IIO Events
+
+https:/Avww.intel,com/contentiwww/us/en/developer/articles/technical/ddio-analysis-performance-monitoring.html 11/22
+

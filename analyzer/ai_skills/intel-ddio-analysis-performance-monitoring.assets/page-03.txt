@@ -1,0 +1,74 @@
+
+physical address. Note that this means there is no inherent affinity for a memory request from a core to go to its co-located CHA or LLC
+slice. The CHA is a critical PerfMon observation point for I/O analysis and Intel® DDIO effectiveness, as this is where we can count I/O
+requests and observe LLC hits and misses for the socket.
+
++ M2IOSF: The Mesh to 1/O Scalable Fabric connects to the mesh and is the interface between the CPU and I/O devices connected
+through a PCI Express slot or integrated on die. The M2IOSF is an observation point where we can count I/O request types per M2IOSF
+block or PCIE device. The M2IOSF contains multiple sub-blocks with performance monitoring units (PMUs). The M2IOSF serves the
+same bridging function for Compute Express Link® (CXL) devices, but these blocks and flows are not shown or discussed here.
+
+© TIO: Integrated 1/0 unit consisting of an inbound and outbound traffic controller for queueing requests; it is responsible for
+following PCI Express ordering rules and converting PCI Express requests to internal commands for IRP and vice-versa. The IO
+PMU provides per device resolution (up to x4 bifurcation), In this context, “inbound” refers to I/O device-initiated requests sent to
+the CPU (also called upstream), while “outbound” refers to CPU-initiated requests sent to the I/O device (also called downstream).
+
+‘© IRP: IIO to Ring Port unit, sometimes called the cache tracker, is responsible for converting IIO requests (from PCle/CXL or
+integrated accelerator agents) to mesh requests and vice versa. The IRP contains a local write cache that is used for accelerating
+inbound write requests. This cache should not be confused with processor L1, L2 caches, or the CHA LLC and can be thought of as
+a temporary write buffer. The IRP PMU provides per M2IOSF resolution, not per device like the 110.
+
+‘© M2PCIE: Mesh to PCI Express unit, bridges the mesh and IRP.
+
+ 
+
+Mesh
+
+ 
+
+ae
+
+M2PCIE
+vie)
+
+M2PCIE
+
+ 
+
+ 
+
+ 
+
+ 
+
+ 
+
+ 
+
+ 
+
+ 
+
+ 
+
+ 
+
+ 
+
+ 
+
+PCIE / DMI / OSE
+
+Figure 2: M2IOSF block diagram
+
++ IMC: Integrated Memory Controller that handles all access to DDR.
++ UPI: Intel Ultra Path Interconnect, a high-speed interconnect used in multi-socket server configurations to connect multiple sockets
+together.
+
+2.2 Intel® DDIO Overview (w/ high level transactions)
+
+Intel® DDIO allows I/O devices to perform direct memory access (DMA) transactions, including inbound reads and inbound writes to the
+CPU's LLC instead of DRAM. This has multiple benefits: improving transaction latencies observed by the I/O device, reducing demand on
+
+https:/Avww.intel,com/contentiwww/us/en/developer/articles/technical/ddio-analysis-performance-monitoring.html 3122
+

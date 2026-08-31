@@ -1,0 +1,174 @@
+From 5de7d5cc0ee23b2facf3f10d590fe268e36f5283 Mon Sep 17 00:00:00 2001
+From: root <root@spr-inspur-22.sh.intel.com>
+Date: Thu, 9 Jan 2025 04:39:40 -0500
+Subject: [PATCH 1/2] add lock prefix in mlx driver mmio wirte
+
+---
+ Makefile                                      |  2 +-
+ .../net/ethernet/mellanox/mlx5/core/en_txrx.c | 62 +++++++++++++++++++
+ .../ethernet/mellanox/mlx5/core/lag/debugfs.c | 44 +++++++++++++
+ 3 files changed, 107 insertions(+), 1 deletion(-)
+
+diff --git a/Makefile b/Makefile
+index c7ee53f4bf04..a33d586905cb 100644
+--- a/Makefile
++++ b/Makefile
+@@ -2,7 +2,7 @@
+ VERSION = 6
+ PATCHLEVEL = 8
+ SUBLEVEL = 0
+-EXTRAVERSION =
++EXTRAVERSION = -lock-in-mlx
+ NAME = Hurr durr I'ma ninja sloth
+ 
+ # *DOCUMENTATION*
+diff --git a/drivers/net/ethernet/mellanox/mlx5/core/en_txrx.c b/drivers/net/ethernet/mellanox/mlx5/core/en_txrx.c
+index a7d9b7cb4297..ad0744574cd6 100644
+--- a/drivers/net/ethernet/mellanox/mlx5/core/en_txrx.c
++++ b/drivers/net/ethernet/mellanox/mlx5/core/en_txrx.c
+@@ -39,6 +39,52 @@
+ #include "en/xsk/tx.h"
+ #include "en_accel/ktls_txrx.h"
+ 
++
++
++#include "diag/cmd_tracepoint.h"
++
++// flag: 0 - no any lock simulation
++// 		1 - before cq_arms_ops
++// 		2 - after cq_arms_ops
++//
++static int mlx_cq_arms_lock_flag = 0;
++
++int mlx_cq_arms_lock_flag_get(void)
++{
++	return mlx_cq_arms_lock_flag;
++}
++void mlx_cq_arms_lock_flag_set(int v)
++{
++	mlx_cq_arms_lock_flag = v;
++}
++
++enum {
++	THIS_STATE_IDLE = 0,
++	THIS_STATE_RUN = 1,
++}
++volatile value1 = 0x5A;
++
++static int lock_local_var(void)
++{
++	// lock btsq on local variable, to simulate the tasklet_action functin.
++	unsigned long old_state, new_state;
++
++	old_state = ~value1;
++	new_state = value1 | (1U<<2);
++
++	//return arch_cmpxchg(&(t)->state, old_state, new_state);
++	return !test_and_set_bit(THIS_STATE_RUN, &old_state);
++}
++
++static void pause_cycle(long cycle)
++{
++	for (long i = 0; i <= cycle; i++) {
++		//cpu_relax();	
++		asm volatile("rep; nop");
++		//asm volatile("nop");
++	}
++}
++
+ static inline bool mlx5e_channel_no_affinity_change(struct mlx5e_channel *c)
+ {
+ 	int current_cpu = smp_processor_id();
+@@ -233,11 +279,27 @@ int mlx5e_napi_poll(struct napi_struct *napi, int budget)
+ 
+ 	mlx5e_handle_rx_dim(rq);
+ 
++	if (mlx_cq_arms_lock_flag == 1) {
++		lock_local_var();
++	} else if (mlx_cq_arms_lock_flag == 3) {
++		serialize();
++	}
++
+ 	mlx5e_cq_arm(&rq->cq);
+ 	mlx5e_cq_arm(&c->icosq.cq);
+ 	mlx5e_cq_arm(&c->async_icosq.cq);
+ 	mlx5e_cq_arm(&c->xdpsq.cq);
+ 
++	if (mlx_cq_arms_lock_flag == 2) {
++		lock_local_var();
++	} else if (mlx_cq_arms_lock_flag == 4) {
++		serialize();
++	} else if (mlx_cq_arms_lock_flag >= 20) {
++		// wait here for several cycle with PAUSE instruction
++		// to wait for the previous MMIO ops completion.
++		pause_cycle(mlx_cq_arms_lock_flag);
++	}
++
+ 	if (xsk_open) {
+ 		mlx5e_handle_rx_dim(xskrq);
+ 		mlx5e_cq_arm(&xsksq->cq);
+diff --git a/drivers/net/ethernet/mellanox/mlx5/core/lag/debugfs.c b/drivers/net/ethernet/mellanox/mlx5/core/lag/debugfs.c
+index f4b777d4e108..197bcc033f9e 100644
+--- a/drivers/net/ethernet/mellanox/mlx5/core/lag/debugfs.c
++++ b/drivers/net/ethernet/mellanox/mlx5/core/lag/debugfs.c
+@@ -161,6 +161,49 @@ DEFINE_SHOW_ATTRIBUTE(flags);
+ DEFINE_SHOW_ATTRIBUTE(mapping);
+ DEFINE_SHOW_ATTRIBUTE(members);
+ 
++
++
++extern int mlx_cq_arms_lock_flag_get(void);
++extern void mlx_cq_arms_lock_flag_set(int v);
++
++static int mlx_cq_arms_lock_flag_show(struct seq_file *file, void *priv)
++{
++	struct mlx5_core_dev *dev = file->private;
++	struct mlx5_lag *ldev;
++	int flag;
++
++	ldev = mlx5_lag_dev(dev);
++	mutex_lock(&ldev->lock);
++	flag = mlx_cq_arms_lock_flag_get();
++	mutex_unlock(&ldev->lock);
++
++	seq_printf(file, "%d\n", flag);
++
++	return 0;
++}
++
++static ssize_t mlx_cq_arms_lock_flag_write(struct file *file, const char __user *userbuf, size_t count, loff_t *ppos)
++{
++	struct seq_file *seq_f = file->private_data;
++	struct mlx5_core_dev *dev = seq_f->private;
++	struct mlx5_lag *ldev;
++	int v, flag, ret;
++
++	ret = kstrtou32_from_user(userbuf, count, 10, &v);
++	if (ret)
++		return ret;
++
++	ldev = mlx5_lag_dev(dev);
++	mutex_lock(&ldev->lock);
++	mlx_cq_arms_lock_flag_set(v);
++	mutex_unlock(&ldev->lock);
++
++	return count;
++}
++
++DEFINE_SHOW_STORE_ATTRIBUTE(mlx_cq_arms_lock_flag);
++
++
+ void mlx5_ldev_add_debugfs(struct mlx5_core_dev *dev)
+ {
+ 	struct dentry *dbg;
+@@ -174,6 +217,7 @@ void mlx5_ldev_add_debugfs(struct mlx5_core_dev *dev)
+ 	debugfs_create_file("flags", 0444, dbg, dev, &flags_fops);
+ 	debugfs_create_file("mapping", 0444, dbg, dev, &mapping_fops);
+ 	debugfs_create_file("members", 0444, dbg, dev, &members_fops);
++	debugfs_create_file("mlx_cq_arms_lock_flag", 0660, dbg, dev, &mlx_cq_arms_lock_flag_fops);
+ }
+ 
+ void mlx5_ldev_remove_debugfs(struct dentry *dbg)
+-- 
+2.43.0
+

@@ -1,0 +1,78 @@
+The 4th Generation Intel® Xeon® Scalable Processor and Sth Generation Intel® Xeon® Scalable Processor offers multiple methods to
+
+designate all or a portion of inbound 1/0 writes as non-allocating, This can be achieved either through BIOS or by adjusting the relevant
+‘TPH bit in the PCle transaction TLP header.
+
+Full non-allocating writes bypass the LLC and there is no allocation into the LLC, even as a temporary measure. Partial non-allocating writes
+temporarily allocate into the LLC for data merging purposes. In this case, once the data merging is complete the full cache line in the LLC is
+released and written to memory.
+
+2.2.1.5 IO LLC Ways
+
+In CPUs that support Intel® DDIO, a model-specific register (MSR) named IO_LLC_WAYS is present. This register allows users to regulate
+the size of the segment of the LLC where new inbound 1/0 write data can be allocated, By default, only a limited section of the LLC is
+available for fresh allocations; this helps to safeguard valuable application data from being displaced from the LLC by I/O data, Detailed
+specifications of this register are provided in platform-specific documentation.
+
+2.2.2 Inbound Reads
+2.2.2.1 Inbound Reads Overview
+
+Inbound 1/0 read transactions also benefit from Intel® DDIO as it allows the device to read the data from system caches as opposed to
+system memory, resulting in latency reduction and memory demand savings, Inbound 1/0 read requests do not intrinsically result in LLC
+allocations. However, they must follow the coherence protocol of the platform, which may need to allocate data into LLC following a snoop.
+‘As with inbound write requests, read requests can hit or miss LLC.
+
+2.2.2.2 Inbound Reads LLC Hit
+
+Inbound read requests are initiated by M2IOSF and target a specific CHA determined by the destination address's hash. The CHA looks up
+the data in LLC and, if the data is present, returns the full cache line to the requestor M2IOSF. M2IOSF does not keep a copy of the cache
+line, so no snoop filter update is necessary.
+
+2.2.2.3 Inbound Read LLC Miss
+
+If the CHA did not find the requested data in LLC, it must be found elsewhere in the system. This can be a core’s local cache, or a cache in
+another socket, or system memory. CHA looks up the snoop filter to determine if the data is available in another core’s cache and reads the
+memory to determine if it’s present in another socket. By default, if data is read from memory, it is not cached in LLC.
+
+2.3 Performance Monitoring Overview
+2.3.1 Introduction
+
+The Intel Performance Monitoring feature includes a large set of registers called performance monitoring counters (PMC) that software can
+program to count a specified “hardware event.” These PMCs are distributed throughout the architecture, including the blocks shown in
+Figure 1: Core, CHA, M2IOSF, UPI, IMC, and more. By “hardware event,” we refer to an activity that occurs in that block that is interesting
+to monitor. For example, in the core, PMCs can count the number of instructions retired, branch predictions and cache hits.
+
+2.3.2 Intel® PerfMon GitHub
+
+Intel® publishes PerfMon event and metric information for all supported platforms on its Performance Monitoring GitHub [2], In the SPR
+folder, the event folder contains three files containing event programming information:
+
++ sapphirerapids_core.json: Core and Off Core Response (OCR) events
+
++ sapphirerapids_uncore.json: Tested uncore events
+
++ sapphirerapids_uncore_experimental.json: uncore events that have not been tested; “use at your own risk”.
+
+These three files contain all the available PerfMon events for 4th Generation Intel® Xeon® Scalable Processors and event programming
+information for software tools. Events for the 5th Generation Intel® Xeon® Scalable Processors are available under the EMR directory.
+
+There is also a metric folder, containing a JSON file with useful metrics that make performance analysis easier by turning raw event counts
+into human-readable units of measure like GHz, MB/S, or nanoseconds. These metrics can be used by custom PerfMon tools and are also
+available in “Linux perf stat” via the -M option
+
+2.3.3 PerfMon Event Naming Conventions
+
+It is helpful to understand the uncore PerfMon event naming convention used for defining a countable event, so that one can determine
+where in the architecture the monitoring is occurring from the event name or from which unit's perspective,
+
+Each event definition in the JSON file has a field “EventName” which assigns a human readable string to a specific set of values that
+software programs into the PerfMon control registers. The event name starts with "UNC" to indicate this is an uncore event (rather than a
+core event). Following "UNC" is an acronym or letter to indicate which unit in the uncore this event belongs to. This quickly tells us if we
+observe counts in the memory controller, UPI link, or CHA. Below is the key for the acronyms used:
+
+* CHA: the LLC Coherency engine and home agent
+
++ M2IOSF:
+
+https:/Awww.intel.com/content/www/us/en/developer/articles/technical/ddio-analysis-performance-monitoring.html 7122
+

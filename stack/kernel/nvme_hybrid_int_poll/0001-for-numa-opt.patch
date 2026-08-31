@@ -1,0 +1,726 @@
+From 3e01736254d35846c9bb68dae923c4be8bca6e7b Mon Sep 17 00:00:00 2001
+From: "michael.m.Zhang" <michael.m.zhang@intel.com>
+Date: Tue, 18 Nov 2025 04:59:36 -0500
+Subject: [PATCH 1/2] for numa opt
+
+---
+ drivers/nvme/host/pci.c | 580 ++++++++++++++++++++++++++++++++++++++++
+ 1 file changed, 580 insertions(+)
+
+diff --git a/drivers/nvme/host/pci.c b/drivers/nvme/host/pci.c
+index 2ca21e381..dc1c36db9 100644
+--- a/drivers/nvme/host/pci.c
++++ b/drivers/nvme/host/pci.c
+@@ -242,6 +242,22 @@ union nvme_descriptor {
+ 	__le64			*prp_list;
+ };
+ 
++static blk_status_t nvme_pci_setup_prps(struct nvme_dev *dev,
++		struct request *req, struct nvme_rw_command *cmnd);
++
++static void nvme_print_sgl(struct scatterlist *sgl, int nents);
++
++static int numa_opt_enabled = 0;
++static int numa_opt_nocopy = 0;
++struct nvme_numa_optimize {
++	bool enabled;
++	int original_numa_node;
++	struct sg_table original_sgt;
++	void *numa_local_buffer;         // Local buffer pointer
++	dma_addr_t numa_local_dma;       //local numa DMA address
++	size_t buffer_size;
++};
++
+ /*
+  * The nvme_iod describes the data in an I/O.
+  *
+@@ -258,9 +274,461 @@ struct nvme_iod {
+ 	dma_addr_t first_dma;
+ 	dma_addr_t meta_dma;
+ 	struct sg_table sgt;
++    struct nvme_numa_optimize numa_opt;	
+ 	union nvme_descriptor list[NVME_MAX_NR_ALLOCATIONS];
+ };
+ 
++
++// // Scan all of the bio vec pages to check the io memory numa node ID.
++// static int nvme_get_bio_numa_node(struct request *req)
++// {
++//     struct bio_vec bvec;
++//     struct bvec_iter iter;
++//     struct page *first_page = NULL;
++// 	struct bio *bio = req->bio;
++
++// 	// struct nvme_iod *iod = blk_mq_rq_to_pdu(req);
++// 	// if (numa_opt_enabled)
++// 	// 	nvme_print_sgl(iod->sgt.sgl, iod->sgt.nents);	
++
++// 	// let get first used page.
++//     bio_for_each_segment(bvec, bio, iter) {
++//         struct page *page = bvec.bv_page;
++
++// 		if (PageSlab(page) || PageCompound(page))
++//             continue;
++// 		if (page) {
++// 			first_page = page;
++// 			break;
++// 		}
++//     }
++    
++//     if (!first_page)
++//         return NUMA_NO_NODE;
++        
++//     return page_to_nid(first_page);
++// }
++
++/**
++ * nvme_get_bio_numa_node - Get the NUMA node ID of a bio's buffer
++ * @bio: bio structure to analyze
++ * 
++ * This function samples the first few pages of the bio to determine the NUMA node.
++ * It's optimized for performance by limiting the number of pages sampled.
++ * Returns: NUMA node ID, or NUMA_NO_NODE if cannot determine
++ */
++static int nvme_get_bio_numa_node(struct request *req)
++{
++    struct bio_vec bvec;
++    struct bvec_iter iter;
++	struct bio *bio = req->bio;
++	struct nvme_queue *nvmeq = req->mq_hctx->driver_data;
++	struct nvme_dev *dev = nvmeq->dev;
++
++	int first_valid_node = NUMA_NO_NODE;
++    int sampled_pages = 0;
++    const int max_samples = 3; // check first 3 pages.
++    
++	if (!bio || !bio_has_data(bio)) {
++        dev_dbg(dev->dev, "bio is NULL or has no data, cannot determine NUMA node\n");
++        return NUMA_NO_NODE;
++    }
++    
++    bio_for_each_segment(bvec, bio, iter) {
++        struct page *page = bvec.bv_page;
++        int page_numa;
++        
++        // if (PageSlab(page) || PageCompound(page))
++        //     continue;
++		
++		// Skip special pages that cannot provide accurate NUMA information
++        if (PageSlab(page)) {
++            dev_dbg(dev->dev, "Page %d: slab page, skipping NUMA node check\n", sampled_pages);
++            continue;
++        }
++        
++        if (PageCompound(page)) {
++			// dev_dbg(dev->dev,"Page %d: compound page, skipping NUMA node check\n", sampled_pages);
++            // continue;
++
++			// Some pages is compund page, etc, HP, THP, that might cross NUMA.
++			struct page *head = compound_head(page);
++            page_numa = page_to_nid(head);
++
++            // dev_dbg(dev->dev,  "Compound page detected, using head page NUMA node: %d\n", page_numa);
++            // dev_dbg(dev->dev,  "Compound page order: %d, nr_pages: %d\n", 
++            //         compound_order(page), compound_nr(page));
++
++            if (compound_nr(page) > 1) {
++                dev_dbg(dev->dev, "WARNING: Compound page has %d subpages, may span multiple NUMA nodes\n",
++                        compound_nr(page));
++            }
++
++        }
++	
++        page_numa = page_to_nid(page);
++        if (page_numa == NUMA_NO_NODE)
++            continue;
++        
++        if (first_valid_node == NUMA_NO_NODE) {
++            first_valid_node = page_numa;
++        } else if (page_numa != first_valid_node) {
++            // pages has cross NUMa nodes.
++			dev_dbg(dev->dev, "WARNING: Page %d is on different NUMA node: %d (expected: %d)\n",
++                    sampled_pages, page_numa, first_valid_node);
++			return first_valid_node;
++        }
++
++        sampled_pages++;
++        if (sampled_pages >= max_samples)
++            break;
++    }
++    
++    return first_valid_node;
++}
++
++// Checking the nvme opt condition.
++static bool nvme_should_optimize_numa(struct nvme_dev *dev, struct request *req,
++									 int dev_numa_node)
++{
++	struct bio *bio = req->bio;
++    size_t io_size = blk_rq_bytes(req);
++	struct nvme_iod *iod = blk_mq_rq_to_pdu(req);
++
++	if (!numa_opt_enabled)
++		return false;
++    // for > 128k IO.
++    if (io_size < 128 * 1024)
++        return false;
++	// only for READ ops.
++    if (rq_data_dir(req) != READ)
++        return false;
++
++	//numa check.
++    int bio_numa_node = nvme_get_bio_numa_node(req);
++	if (bio_numa_node == NUMA_NO_NODE)
++        return false;
++
++	//skip the local numa request.
++    if (bio_numa_node == dev_numa_node) {
++        return false;
++	}
++
++	// dev_dbg(dev->dev, "NUMA should optimized: io_size=%zu, io node%d device node%d\n",
++	// 		            io_size, bio_numa_node, dev_numa_node);
++
++	return true;
++}
++
++// verify DMA mapped NUMA node
++static void debug_dma_numa_info(struct nvme_dev *dev, struct request *req)
++{
++	struct nvme_iod *iod = blk_mq_rq_to_pdu(req);
++	struct nvme_command *cmnd = &iod->cmd;
++
++	pr_debug("Entry %s ..., numa_opt set enalbed? %s\n", __FUNCTION__, iod->numa_opt.enabled?"YES":"NO");
++
++	if (iod->numa_opt.enabled) {
++	//if (numa_opt_enabled) {
++        struct page *page = virt_to_page(iod->numa_opt.numa_local_buffer);
++        int buffer_node = page_to_nid(page);
++        int dev_node = dev_to_node(dev->dev);
++        
++        dev_dbg(dev->dev, "DMA NUMA info: buffer_node=%d, dev_node=%d, same_node=%d\n",
++                buffer_node, dev_node, buffer_node == dev_node);
++
++        dev_dbg(dev->dev, "DMA addresses: local_dma=0x%llx, prp1=0x%llx\n",
++                iod->numa_opt.numa_local_dma, 
++                le64_to_cpu( cmnd->rw.dptr.prp1));
++
++		phys_addr_t phys_addr = virt_to_phys(iod->numa_opt.numa_local_buffer);
++        dev_info(dev->dev, "  Physical addr: 0x%llx\n", phys_addr);
++
++
++		if (cmnd->rw.dptr.prp2) {
++			dma_addr_t prp2 = le64_to_cpu(cmnd->rw.dptr.prp2);
++			dev_dbg(dev->dev, "PRP2:               0x%llx\n", prp2);
++		} else {
++			dev_dbg(dev->dev, "PRP2:               NULL\n");
++		}
++		
++		if (iod->nr_allocations > 0) {
++			dev_dbg(dev->dev, "Using PRP list:      YES (%d allocations)\n", 
++					iod->nr_allocations);
++		}
++
++
++		dev_info(dev->dev, "=== sg_table Debug ===\n");
++		dev_info(dev->dev, "sgt.sgl:        %p\n", iod->sgt.sgl);
++		dev_info(dev->dev, "sgt.nents:      %d\n", iod->sgt.nents);
++		//dev_info(dev->dev, "numa_opt.original_sgt: %p\n", iod->numa_opt.original_sgt);
++		
++		if (iod->sgt.sgl) {
++			struct scatterlist *sg = iod->sgt.sgl;
++			dev_info(dev->dev, "sg_dma_address:  0x%llx\n", sg_dma_address(sg));
++			dev_info(dev->dev, "sg_length:      %u\n", sg->length);
++			dev_info(dev->dev, "sg_page:        %p\n", sg_page(sg));
++		}
++
++	}
++	dev_info(dev->dev, "--- final confirm sg data ---\n");
++	nvme_print_sgl(iod->sgt.sgl, iod->sgt.nents);
++}
++
++
++// // nvme_map_data for numa opt.
++// static blk_status_t nvme_numa_opt_map_data(struct nvme_dev *dev, struct request *req,
++//                                  struct nvme_iod *iod, struct nvme_command *cmnd)
++// {
++//     // If use the numa opt, to do single mapping.
++//     if (iod->numa_opt.enabled) {
++//         // we use single DMA mapping here for optimzation.
++//         iod->nents = dma_map_sg(dev->dev, iod->sg, iod->nents, rq_data_dir(req));
++//         if (iod->nents == 0)
++//             return BLK_STS_RESOURCE;
++        
++//         // prp to new buffer.
++//         cmnd->dptr.prp1 = cpu_to_le64(sg_dma_address(iod->sg));
++//         if (iod->nents > 1) {
++//             nvme_pci_setup_prps(dev, req, iod);
++//         }
++//     }
++
++// 	return BLK_STS_OK;
++// }
++
++// NUMA opt cleanup for failing.
++static void nvme_cleanup_numa_opt_mapping(struct nvme_dev *dev, struct request *req, struct nvme_iod *iod)
++{
++    if (iod->sgt.nents) {
++        dma_unmap_sg(dev->dev, iod->sgt.sgl, iod->sgt.nents,
++                    rq_data_dir(req));
++    }
++    
++    if (iod->sgt.sgl) {
++        kfree(iod->sgt.sgl);
++        iod->sgt.sgl = NULL;
++    }
++    
++    if (!dma_mapping_error(dev->dev, iod->numa_opt.numa_local_dma)) {
++        dma_unmap_single(dev->dev, iod->numa_opt.numa_local_dma,
++                       iod->numa_opt.buffer_size, DMA_FROM_DEVICE);
++    }
++
++	if (iod->numa_opt.numa_local_buffer)
++    	kfree(iod->numa_opt.numa_local_buffer);
++
++	memset(&iod->numa_opt, 0, sizeof(iod->numa_opt));
++}
++
++// config NUMA OPT structure.
++static blk_status_t nvme_setup_numa_optimization(struct nvme_dev *dev,
++                                                struct request *req,
++												struct nvme_command *cmnd,
++                                                int dev_numa_node)
++{
++	struct nvme_iod *iod = blk_mq_rq_to_pdu(req);
++	struct bio *bio = req->bio;
++    size_t io_size = blk_rq_bytes(req);
++    gfp_t gfp_mask = GFP_ATOMIC | __GFP_THISNODE;
++	blk_status_t ret;
++
++	if (iod->numa_opt.enabled)
++		return BLK_STS_OK;
++
++	memset(&iod->numa_opt, 0, sizeof(iod->numa_opt));
++
++	// dev_info(dev->dev, "--- initially print sg data ---\n");
++	// nvme_print_sgl(iod->sgt.sgl, iod->sgt.nents);
++
++	// 1. backup orginal bio
++    memcpy(&iod->numa_opt.original_sgt, &iod->sgt, sizeof(iod->sgt));
++    iod->numa_opt.original_numa_node = nvme_get_bio_numa_node(req);
++    iod->numa_opt.buffer_size = io_size;
++    
++    // 2. allocate new buffer on local NUMa.
++    iod->numa_opt.numa_local_buffer = kmalloc_node(io_size, gfp_mask, dev_numa_node);
++    if (!iod->numa_opt.numa_local_buffer) {
++        dev_warn(dev->dev, "NUMA optimization: failed to allocate local buffer\n");
++		iod->numa_opt.enabled = false;
++		return BLK_STS_RESOURCE;
++    }
++    
++    // 3. Mapp the local NUMA buffer DMA.
++
++    // 
++    // unsigned long attrs = DMA_ATTR_NO_WARN;
++    // #ifdef DMA_ATTR_NUMA_AWARE
++    // attrs |= DMA_ATTR_NUMA_AWARE;
++    // #endif
++    // return dma_map_single_attrs(dev, iod->numa_opt.numa_local_buffer, io_size, DMA_BIDIRECTIONAL, attrs);
++
++
++	iod->numa_opt.numa_local_dma = dma_map_single(dev->dev,
++                                                iod->numa_opt.numa_local_buffer,
++                                                io_size, DMA_BIDIRECTIONAL);
++    if (dma_mapping_error(dev->dev, iod->numa_opt.numa_local_dma)) {
++        kfree(iod->numa_opt.numa_local_buffer);
++        dev_warn(dev->dev, "NUMA optimization: DMA mapping failed\n");
++		iod->numa_opt.enabled = false;
++        return BLK_STS_RESOURCE;
++    }
++    
++    // 4. sg list to local NUMA buffer.
++    struct scatterlist *opt_sg = kmalloc(sizeof(*opt_sg), GFP_ATOMIC);
++    if (!opt_sg) {
++        dma_unmap_single(dev->dev, iod->numa_opt.numa_local_dma, 
++                        io_size, DMA_FROM_DEVICE);
++        kfree(iod->numa_opt.numa_local_buffer);
++		dev_warn(dev->dev, "NUMA optimization: SG malloc failed.\n");
++		if (!dma_mapping_error(dev->dev, iod->numa_opt.numa_local_dma)) {
++			dma_unmap_single(dev->dev, iod->numa_opt.numa_local_dma,
++						iod->numa_opt.buffer_size, DMA_FROM_DEVICE);
++		}
++
++		iod->numa_opt.enabled = false;
++		return ret;
++    }
++    
++    sg_init_table(opt_sg, 1);
++    sg_set_buf(opt_sg, iod->numa_opt.numa_local_buffer, io_size);
++    
++    // 5. set new iod to local NUMA buffer.
++    iod->sgt.sgl = opt_sg;
++    iod->sgt.nents = 1;
++    iod->sgt.orig_nents = 1;
++    iod->numa_opt.enabled = true;
++
++    // 6. map the new sg_table.
++    iod->sgt.nents = dma_map_sg(dev->dev, iod->sgt.sgl, iod->sgt.nents,
++                               rq_data_dir(req));
++    if (iod->sgt.nents == 0) {
++		dev_warn(dev->dev, "NUMA optimization: dma map sg failed.\n");
++        nvme_cleanup_numa_opt_mapping(dev, req, iod);
++		iod->numa_opt.enabled = false;
++		return ret;
++    }
++    
++    // 7. setup prp for this new buffer.
++    ret = nvme_pci_setup_prps(dev, req, &cmnd->rw);
++    if (ret) {
++		dev_warn(dev->dev, "NUMA optimization: setup prps failed.\n");
++        nvme_cleanup_numa_opt_mapping(dev, req, iod);
++		iod->numa_opt.enabled = false;
++		return ret;
++    }
++
++	dev_dbg(dev->dev, "NUMA optimization: io_size=%zu, from node%d to node%d, mapped entries: %d\n",
++             io_size, iod->numa_opt.original_numa_node, dev_numa_node, iod->sgt.nents);
++	//pr_info( "NUMA optimization: io_size=%zu, from node%d to node%d\n",
++//			io_size, iod->numa_opt.original_numa_node, dev_numa_node);
++
++    return BLK_STS_OK;
++}
++
++static void nvme_copy_to_original_buffer(struct request *req, struct nvme_iod *iod)
++{
++	//struct bio *bio = req->bio;
++    struct scatterlist *sg;
++    int i;
++    void *src_ptr = iod->numa_opt.numa_local_buffer;
++    size_t copied = 0;
++    
++	pr_debug("Entry %s ...\n", __FUNCTION__);
++    // scan sg_table segments，copy all.
++    for_each_sg(iod->numa_opt.original_sgt.sgl, sg, 
++                iod->numa_opt.original_sgt.nents, i) {
++        struct page *page = sg_page(sg);
++        void *dst_ptr = kmap_atomic(page);
++        size_t len = sg->length;
++        
++        memcpy(dst_ptr + sg->offset, src_ptr + copied, len);
++        kunmap_atomic(dst_ptr);
++        
++        copied += len;
++    }
++}
++
++// io completion for numa opt. should be called in nvme_pci_complete_rq();
++static void nvme_numa_opt_complete_rq(struct request *req)
++{
++//    struct nvme_dev *dev = req->q->queuedata;
++	struct nvme_queue *nvmeq = req->mq_hctx->driver_data;
++	struct nvme_dev *dev = nvmeq->dev;
++    struct nvme_iod *iod = blk_mq_rq_to_pdu(req);
++
++	//pr_debug("Entry %s ...\n", __FUNCTION__);
++    if (iod->numa_opt.enabled) {
++
++		//pr_debug("numa opt completed: buffer_size=%zu,\n",iod->numa_opt.buffer_size); 
++		// 1.unmap the local numa DMA.
++		// will do it in unmap_data? assume it's done before.
++		// dma_unmap_sgtable(dev->dev, &iod->sgt, rq_dma_dir(req), 0);
++		if (iod->sgt.nents) {
++			dma_unmap_sg(dev->dev, iod->sgt.sgl, iod->sgt.nents,
++						rq_data_dir(req));
++		}
++		// 2. check blk_status_t or not? if IO error, there is no data to copy
++		// if read successfully, then copy data to original user buffer is OK.
++        if (rq_data_dir(req) == READ && numa_opt_nocopy == 0) {
++            nvme_copy_to_original_buffer(req, iod);
++        }
++
++		// 3 cleanup resource.
++		if (!dma_mapping_error(dev->dev, iod->numa_opt.numa_local_dma)) {
++        	dma_unmap_single(dev->dev, iod->numa_opt.numa_local_dma,
++            	           iod->numa_opt.buffer_size, DMA_FROM_DEVICE);
++    	}
++
++        // 3. free the local resource mapped for opt.
++		// -- a
++		if (iod->numa_opt.numa_local_buffer)
++	        kfree(iod->numa_opt.numa_local_buffer);
++        
++		// b. release sg table ???.
++		if (iod->sgt.sgl && iod->sgt.sgl != iod->numa_opt.original_sgt.sgl) {
++		 	kfree(iod->sgt.sgl);
++		}
++
++		// -- c. restore original table.????
++		memcpy(&iod->sgt, &iod->numa_opt.original_sgt, sizeof(iod->sgt));
++    
++		// ---d,
++		memset(&iod->numa_opt, 0, sizeof(iod->numa_opt));
++        iod->numa_opt.enabled = false;
++    }
++}
++
++// // called when nvme_unmap_data
++// static void nvme_numa_opt_unmap_data(struct nvme_dev *dev, struct request *req)
++// {
++//     struct nvme_iod *iod = blk_mq_rq_to_pdu(req);
++    
++//     /*
++// 	* unmap the dma sg tables if needed.
++// 	*/
++//     // if (!iod->numa_opt.enabled && iod->dma_len) {
++// 	// 	WARN_ON_ONCE(!iod->sgt.nents);
++// 	// 	dma_unmap_sgtable(dev->dev, &iod->sgt, rq_dma_dir(req), 0);
++//     // }
++    
++//     // if (iod->sgt.nents > 1) {
++//     //     struct dma_pool *pool = nvme_dma_pool(iod->nvmeq, iod);
++//     //     if (iod->first_dma) {
++//     //         dma_pool_free(pool, (void *)iod->first_dma, iod->first_dma);
++//     //     }
++//     // }
++// }
++
++// init numa opt in nvme_pci_init_request()
++static void nvme_numa_opt_init_request(struct request *req, unsigned int numa_node)
++{
++    struct nvme_iod *iod = blk_mq_rq_to_pdu(req);
++
++    memset(&iod->numa_opt, 0, sizeof(iod->numa_opt));
++    iod->numa_opt.enabled = false;
++}
++
+ static inline unsigned int nvme_dbbuf_size(struct nvme_dev *dev)
+ {
+ 	return dev->nr_allocated_queues * 8 * dev->db_stride;
+@@ -445,6 +913,8 @@ static int nvme_pci_init_request(struct blk_mq_tag_set *set,
+ 
+ 	nvme_req(req)->ctrl = set->driver_data;
+ 	nvme_req(req)->cmd = &iod->cmd;
++
++	nvme_numa_opt_init_request(req, numa_node);
+ 	return 0;
+ }
+ 
+@@ -562,6 +1032,13 @@ static void nvme_unmap_data(struct nvme_dev *dev, struct request *req)
+ {
+ 	struct nvme_iod *iod = blk_mq_rq_to_pdu(req);
+ 
++//	pr_debug("Entry %s ..., numa_opt set enalbed? %s\n", __FUNCTION__, iod->numa_opt.enabled?"YES":"NO");
++	if (iod->numa_opt.enabled) {
++		nvme_numa_opt_complete_rq(req);
++		//dev_dbg(dev->dev, "%s Complete numa opt unmap...\n", __FUNCTION__);
++		return;
++	}
++
+ 	if (iod->dma_len) {
+ 		dma_unmap_page(dev->dev, iod->first_dma, iod->dma_len,
+ 			       rq_dma_dir(req));
+@@ -570,6 +1047,8 @@ static void nvme_unmap_data(struct nvme_dev *dev, struct request *req)
+ 
+ 	WARN_ON_ONCE(!iod->sgt.nents);
+ 
++	//nvme_numa_opt_unmap_data(dev, req)
++
+ 	dma_unmap_sgtable(dev->dev, &iod->sgt, rq_dma_dir(req), 0);
+ 
+ 	if (iod->nr_allocations == 0)
+@@ -640,11 +1119,32 @@ static blk_status_t nvme_pci_setup_prps(struct nvme_dev *dev,
+ 		iod->nr_allocations = 1;
+ 	}
+ 
++	// //if (numa_opt_enabled) {
++	// if (numa_opt_enabled && iod->numa_opt.enabled == 0) {
++	//     dev_dbg(dev->dev, "%s, (%d allocations),nprps= %d,nents=%d first_DMA addresses: local_dma=0x%llx, prp1=0x%llx\n", __FUNCTION__,
++	// 				iod->nr_allocations, nprps, iod->sgt.nents, iod->first_dma, le64_to_cpu( cmnd->dptr.prp1));
++	// 	nvme_print_sgl(iod->sgt.sgl, iod->sgt.nents);
++	
++	// 	if (iod->sgt.sgl) {
++	// 		struct scatterlist *sg = iod->sgt.sgl;
++	// 		dev_info(dev->dev, "sg_dma_address:  0x%llx\n", sg_dma_address(sg));
++	// 		dev_info(dev->dev, "sg_length:      %u\n", sg->length);
++	// 		dev_info(dev->dev, "sg_page:        %p\n", sg_page(sg));
++	// 		dev_info(dev->dev, "sgt.sgl:        %p\n", iod->sgt.sgl);
++	// 		dev_info(dev->dev, "sgt.nents:      %d\n", iod->sgt.nents);
++	// 	}
++
++	// }
++
+ 	prp_list = dma_pool_alloc(pool, GFP_ATOMIC, &prp_dma);
+ 	if (!prp_list) {
+ 		iod->nr_allocations = -1;
+ 		return BLK_STS_RESOURCE;
+ 	}
++	// if (numa_opt_enabled)
++	// 	dev_dbg(dev->dev, " %s, numa_opt set enabled? %s, prp_dma_ = 0x%llx, dma_addr=0x%llx\n", 
++	// 		__FUNCTION__, (iod->numa_opt.enabled) ? "YES":"NO", prp_dma, dma_addr);
++
+ 	iod->list[0].prp_list = prp_list;
+ 	iod->first_dma = prp_dma;
+ 	i = 0;
+@@ -663,6 +1163,10 @@ static blk_status_t nvme_pci_setup_prps(struct nvme_dev *dev,
+ 		dma_len -= NVME_CTRL_PAGE_SIZE;
+ 		dma_addr += NVME_CTRL_PAGE_SIZE;
+ 		length -= NVME_CTRL_PAGE_SIZE;
++		// //if (numa_opt_enabled) 
++		// if (numa_opt_enabled && iod->numa_opt.enabled == 0)
++		// dev_dbg(dev->dev, " %s, prp_list id: %d, item=0x%llx, dma_len = %d, dma_addr = 0x%llx, buffer size left length: %d \n", 
++		// 	__FUNCTION__, i-1, le64_to_cpu(prp_list[i-1]), dma_len, dma_addr, length);
+ 		if (length <= 0)
+ 			break;
+ 		if (dma_len > 0)
+@@ -676,6 +1180,10 @@ static blk_status_t nvme_pci_setup_prps(struct nvme_dev *dev,
+ done:
+ 	cmnd->dptr.prp1 = cpu_to_le64(sg_dma_address(iod->sgt.sgl));
+ 	cmnd->dptr.prp2 = cpu_to_le64(iod->first_dma);
++	if (numa_opt_enabled)
++	    dev_dbg(dev->dev, "%s end, first_DMA addr(prp2): local_dma=0x%llx, prp1=0x%llx, numa_opt set enabled? %s\n", 
++			__FUNCTION__, iod->first_dma, le64_to_cpu( cmnd->dptr.prp1), (iod->numa_opt.enabled) ? "YES":"NO");
++
+ 	return BLK_STS_OK;
+ free_prps:
+ 	nvme_free_prps(dev, req);
+@@ -793,6 +1301,14 @@ static blk_status_t nvme_map_data(struct nvme_dev *dev, struct request *req,
+ 	struct nvme_iod *iod = blk_mq_rq_to_pdu(req);
+ 	blk_status_t ret = BLK_STS_RESOURCE;
+ 	int rc;
++    // nvme NUMA opt
++	int dev_numa_node = dev_to_node(dev->dev);
++    if (nvme_should_optimize_numa(dev, req, dev_numa_node)) {
++        return nvme_setup_numa_optimization(dev, req, cmnd, dev_numa_node);
++    } else {
++		if (numa_opt_enabled)
++			dev_dbg(dev->dev, "%s: Didn't enable opt numa...\n", __FUNCTION__);
++	}
+ 
+ 	if (blk_rq_nr_phys_segments(req) == 1) {
+ 		struct nvme_queue *nvmeq = req->mq_hctx->driver_data;
+@@ -1028,6 +1544,32 @@ static ssize_t min_running_queues_store(struct kobject *kobj, struct kobj_attrib
+ 	return ret ?: count;
+ }
+ 
++static ssize_t numa_opt_enabled_show(struct kobject *kobj, struct kobj_attribute *attr, char *buf) {
++	return sprintf(buf, "%d\n", numa_opt_enabled);
++}
++
++static ssize_t numa_opt_enabled_store(struct kobject *kobj, struct kobj_attribute *attr, const char *buf, size_t count) {
++	int v = 0;
++	int ret = kstrtoint(buf, 10, &v);
++	if (0 == v || 1 == v)
++		numa_opt_enabled = v;
++
++	return ret ?: count;
++}
++
++static ssize_t numa_opt_nocopy_show(struct kobject *kobj, struct kobj_attribute *attr, char *buf) {
++	return sprintf(buf, "%d\n", numa_opt_nocopy);
++}
++
++static ssize_t numa_opt_nocopy_store(struct kobject *kobj, struct kobj_attribute *attr, const char *buf, size_t count) {
++	int v = 0;
++	int ret = kstrtoint(buf, 10, &v);
++	if (0 == v || 1 == v)
++		numa_opt_nocopy = v;
++
++	return ret ?: count;
++}
++
+ static struct kobj_attribute disable_attr = __ATTR(disable, 0644, disable_show, disable_store);
+ static struct kobj_attribute debug_attr = __ATTR(debug, 0644, debug_show, debug_store);
+ static struct kobj_attribute switch_cnt_attr = __ATTR(switch_cnt, 0644, switch_cnt_show, switch_cnt_store);
+@@ -1037,6 +1579,8 @@ static struct kobj_attribute max_coalesce_threshold_attr = __ATTR(max_coalesce_t
+ static struct kobj_attribute min_coalesce_threshold_attr = __ATTR(min_coalesce_threshold, 0644, min_coalesce_threshold_show, min_coalesce_threshold_store);
+ static struct kobj_attribute min_completed_threshold_attr = __ATTR(min_completed_threshold, 0644, min_completed_threshold_show, min_completed_threshold_store);
+ static struct kobj_attribute min_running_queues_attr = __ATTR(min_running_queues, 0644, min_running_queues_show, min_running_queues_store);
++static struct kobj_attribute numa_opt_enabled_attr = __ATTR(numa_opt_enabled, 0644, numa_opt_enabled_show, numa_opt_enabled_store);
++static struct kobj_attribute numa_opt_nocopy_attr = __ATTR(numa_opt_nocopy, 0644, numa_opt_nocopy_show, numa_opt_nocopy_store);
+ 
+ 
+ /* in 5.10, nvme_queue_rq is inside lock-unlock section, so cannot call nvme_set_irq_coalesce directly, do this in a dedicated thread */
+@@ -1309,8 +1853,22 @@ static void nvme_submit_cmds(struct nvme_queue *nvmeq, struct rq_list *rqlist)
+ 	while ((req = rq_list_pop(rqlist))) {
+ 		struct nvme_iod *iod = blk_mq_rq_to_pdu(req);
+ 
++		// struct nvme_dev *dev = nvmeq->dev;
++		// struct nvme_command *cmnd = &iod->cmd;
++		// int dev_numa_node = dev_to_node(dev->dev);
++		// if (nvme_should_optimize_numa(dev, req, dev_numa_node)) {
++    	//     nvme_setup_numa_optimization(dev, req, cmnd, dev_numa_node);
++	    // } else {
++		// 	dev_dbg(dev->dev, "%s: Should not opt numa...\n", __FUNCTION__);
++		// }
++
+ 		adjust_coalesce(nvmeq, req, nvmeq->sq_head, nvmeq->sq_tail+1);
+ 		nvme_sq_copy_cmd(nvmeq, &iod->cmd);
++		//debug DMA :
++		// if (numa_opt_enabled) {
++		// 	struct nvme_dev *dev = nvmeq->dev;
++		// 	debug_dma_numa_info(dev, req);
++		// }
+ 	}
+ 	nvme_write_sq_db(nvmeq, true);
+ 	spin_unlock(&nvmeq->sq_lock);
+@@ -1377,6 +1935,15 @@ static blk_status_t nvme_queue_rq(struct blk_mq_hw_ctx *hctx,
+ 	if (unlikely(ret))
+ 		return ret;
+ 
++		// //struct nvme_dev *dev = nvmeq->dev;
++		// struct nvme_command *cmnd = &iod->cmd;
++		// int dev_numa_node = dev_to_node(dev->dev);
++		// if (nvme_should_optimize_numa(dev, req, dev_numa_node)) {
++    	//     nvme_setup_numa_optimization(dev, req, cmnd, dev_numa_node);
++	    // } else {
++		// 	dev_dbg(dev->dev, "%s: Should not opt numa...\n", __FUNCTION__);
++		// }
++
+ 	adjust_coalesce(nvmeq, req, nvmeq->sq_head, nvmeq->sq_tail+1);
+ 
+ 	spin_lock(&nvmeq->sq_lock);
+@@ -1391,6 +1958,9 @@ static __always_inline void nvme_pci_unmap_rq(struct request *req)
+ 	struct nvme_queue *nvmeq = req->mq_hctx->driver_data;
+ 	struct nvme_dev *dev = nvmeq->dev;
+ 
++	//struct nvme_iod *iod = blk_mq_rq_to_pdu(req);
++	//pr_debug("Entry %s ..., numa_opt_enable: %d\n", __FUNCTION__, iod->numa_opt.enabled);
++
+ 	if (blk_integrity_rq(req)) {
+ 	        struct nvme_iod *iod = blk_mq_rq_to_pdu(req);
+ 
+@@ -1404,7 +1974,9 @@ static __always_inline void nvme_pci_unmap_rq(struct request *req)
+ 
+ static void nvme_pci_complete_rq(struct request *req)
+ {
++	//pr_debug("nvme_pci_complete_rq ...\n");
+ 	nvme_pci_unmap_rq(req);
++	//nvme_numa_opt_complete_rq(req);
+ 	nvme_complete_rq(req);
+ }
+ 
+@@ -4164,6 +4736,12 @@ static int __init nvme_init(void)
+ 	ret = sysfs_create_file(nvme_kobj, &min_running_queues_attr.attr);
+ 	if (ret)
+ 		pr_err("Failed to create sysfs file: min_running_queues\n");
++	ret = sysfs_create_file(nvme_kobj, &numa_opt_enabled_attr.attr);
++	if (ret)
++		pr_err("Failed to create sysfs file: numa_opt_enabled\n");
++	ret = sysfs_create_file(nvme_kobj, &numa_opt_nocopy_attr.attr);
++	if (ret)
++		pr_err("Failed to create sysfs file: numa_opt_nocopy\n");
+ 
+ 	coalesce_thread = kthread_run(coalesce_thread_function, NULL, "coalesce_thread");
+ 	if (IS_ERR(coalesce_thread)) {
+@@ -4201,6 +4779,8 @@ static void __exit nvme_exit(void)
+ 	sysfs_remove_file(nvme_kobj, &min_completed_threshold_attr.attr);
+ 	sysfs_remove_file(nvme_kobj, &debug_attr.attr);
+ 	sysfs_remove_file(nvme_kobj, &min_running_queues_attr.attr);
++	sysfs_remove_file(nvme_kobj, &numa_opt_enabled_attr.attr);
++	sysfs_remove_file(nvme_kobj, &numa_opt_nocopy_attr.attr);
+ 	kobject_put(nvme_kobj);
+ }
+ 
+-- 
+2.47.3
+

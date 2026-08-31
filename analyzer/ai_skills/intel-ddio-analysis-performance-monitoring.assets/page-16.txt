@@ -1,0 +1,93 @@
+
+  
+  
+
+ 
+
+packets are prepared by the
+Snoop Data iperf application, then sent to
+
+|
+|
+| Ihe NIC device. Client and server
+|
+|
+
+ 
+
+Send Data
+packets are not the same but the
+
+kernel stack reuses the same
+buffers for both flows.
+
+| | Ownership request
+(TOM/ITOMCacheNear)
+LV simiiiate Iperf3 server receives the data
+|} (wamTot or CLFLUSH) from the device. The core
+| processing the IRQ first receives
+| Read Packet Data the data, then copies it into the
+t i iperf application.
+I Send Packet Data t |
+ee 1
+| Copy Packet Data |
+ht a ee fee te ee Sa a ee el
+[- TRead Request (PCIRACury tT 1 In iperf3 client, new networking
+| t
+|
+|
+|
+
+ 
+
+tq Sone Date
+Send completion data
+
+jms a ae
+
+IMaiosF cha | IRQ Core Iperf Corel
+
+Figure 8: High-level Transaction Flow with Iperf Workload
+5.2 Improving Intel® DDIO Efficiency in iperf3 Workload
+
+e interval for PMON Default Reduced 2048
+S = 1 second 8096 queues queues
+
+  
+
+Comment
+
+iperf3 Throughput, Gb/s As outlined in the prior section, the
+600 701 effectiveness of DDIO can be
+
+enhanced by reducing the
+application's working set, an effect
+achieved by decreasing the device
+queue size. In our workload
+configuration with a total of 48
+queues, reducing queue size from
+8k entries to 2k entries aids in
+decreasing the working set by a
+minimum of 6k"42*32B=9.28MB.
+This singular configuration change
+results in a performance
+improvement of the workload by
+16%
+
+io_inbound_read_bandwidth The inbound write and read
+
+40,130 46,912 bandwidth metrics reflect the
+increase in workload throughput. We
+see roughly equal read and write
+bandwidth as our iperf3 workload is
+
+39,675 44,614 configured as both client and server
+simultaneously.
+
+io_inbound_write_bandwidth
+
+UNC_1I0_DATA_REQ_OF 10,032,541,573 11,728,043,894
+_CPU.MEM_READ.PARTO
+
+https:/Avww.intel,com/content/www/us/en/developer/articles/technical/ddio-analysis-performance-monitoring.html 16122
+

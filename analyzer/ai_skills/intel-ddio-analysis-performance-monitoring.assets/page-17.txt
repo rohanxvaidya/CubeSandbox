@@ -1,0 +1,124 @@
+4/12/26, 6:14 AM
+
+Time interval for PMON
+metrics = 1 second
+
+ 
+
+UNC_IIO_DATA_REQ_OF
+_CPU.MEM_WRITE.PARTO
+
+UNC_CHA_TOR_INSERTS.IO
+_CLFLUSH
+
+UNC_CHA_TOR_INSERTS.IO_ITOM
+
+UNC_CHA_TOR_INSERTS.IO
+_HIT_ITOM
+
+UNC_CHA_TOR_INSERTS.IO
+_MISS_ITOM
+
+io_percent_of_inbound_full_writes
+
+_that_miss_|3
+
+UNC_CHA_TOR_INSERTS.IO
+_ITOMCACHENEAR
+
+UNC_CHA_TOR_INSERTS.IO
+_HIT_ITOMCACHENEAR
+
+UNC_CHA_TOR_INSERTS.IO
+_MISS_ITOMCACHENEAR
+
+UNC_CHA_TOR_INSERTS.IO
+_PCIRDCUR
+
+UNC_CHA_TOR_INSERTS.IO
+_HIT_PCIRDCUR
+
+UNC_CHA_TOR_INSERTS.|O
+_MISS_PCIRDCUR
+
+io_percent_of_inbound_full_reads_that
+
+_miss_13
+
+UNC_CHA_TOR_INSERTS.IO
+_WBMTOI
+
+Intel® Data Direct VO Technology Performance Monitoring
+
+Default
+8096 queues
+
+9,893,723,055
+
+615,958,610
+
+96,847,962
+
+524,548,564
+
+85%
+
+248
+
+753
+
+218
+
+653,237,920
+
+127,544,461
+
+576,559,227
+
+88%
+
+547,825,798
+
+Reduced 2048
+queues
+
+Comment
+
+11,183,407,851
+
+Decreasing the ring sizes helps
+
+695,004,460 reduce the inbound VO write miss
+rate, allowing the CPU cores to
+quickly fetch the data from the LLC.
+
+356,015,603
+
+347,039,047
+
+50%
+
+In this workload configuration, the
+40 device is not generating any partial
+inbound 1/0 writes.
+
+8,516
+
+644
+
+Decreasing the ring sizes also
+
+763,394,767 contributes to a reduction in the
+inbound |/O read miss rate, albeit to
+a lesser extent.
+
+255,145,459
+
+563,896,953
+
+74%
+
+657,470,490
+
+https:/Avww.intel,com/content/www/us/en/developer/articles/technical/ddio-analysis-performance-monitoring.html 17122
+

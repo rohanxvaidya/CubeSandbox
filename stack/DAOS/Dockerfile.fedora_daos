@@ -1,0 +1,38 @@
+# fedora-qemu-cxl
+
+ARG OS_VER=40
+ARG OS_IMAGE=fedora
+FROM ${OS_IMAGE}:${OS_VER}
+
+RUN sudo dnf update -y && dnf group install -y "C Development Tools and Libraries" "Development Tools" && \ 
+    sudo dnf install -y golang meson pixman pixman-devel zlib zlib-devel python3 \
+    bzip2 bzip2-devel acpica-tools pkgconf-pkg-config libaio libaio-devel \
+    liburing liburing-devel libzstd libzstd-devel libgudev ruby rubygem-ncursesw \
+    libssh libssh-devel kernel-devel numactl numactl-devel libpmem libpmem-devel \
+    libpmem2 libpmem2-devel daxctl daxctl-devel cxl-cli cxl-devel python3-sphinx \
+    genisoimage ninja-build libdisk-devel parted-devel util-linux-core bridge-utils \
+    libslirp libslirp-devel dbus-daemon dwarves perl
+RUN sudo dnf install -y liburing liburing-devel libnfs libnfs-devel libcurl libcurl-devel \
+  libgcrypt libgcrypt-devel libpng libpng-devel
+# Optional Fedora 37 or newer
+RUN sudo dnf install -y blkio blkio-devel
+
+
+WORKDIR  /opt/
+
+RUN git clone https://gitlab.com/jic23/qemu.git && \
+    cd qemu && \
+    git checkout cxl-2023-05-25 && \
+    mkdir build && cd build && \
+    ../configure --prefix=/opt/qemu-jic23 --target-list=i386-softmmu,x86_64-softmmu --enable-libpmem --enable-slirp && \
+    make -j all  && \
+    make install
+
+#RUN /opt/qemu-cxl-shared/bin/qemu-system-x86_64 --version
+
+RUN wget -O memshare.tgz https://app.box.com/shared/static/7iu9dok7me6zk29ed263uhpkd0tn4uqt.tgz && \
+    tar -xzf ./memshare.tgz
+
+
+COPY /scripts  /opt/
+RUN chmod +x /opt/scripts/*.sh

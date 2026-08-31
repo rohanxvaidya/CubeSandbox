@@ -1,0 +1,97 @@
+4/12/26, 6:14 AM
+
+Time interval for PMON
+metrics = 1 second
+
+ 
+
+L2 Miss Latency, ns
+
+metric_memory bandwidth read
+(MB/sec)
+
+metric_memory bandwidth write
+(MB/sec)
+
+metric_memory bandwidth total
+(MB/sec)
+
+Intel® Data Direct VO Technology Performance Monitoring
+
+Default Reduced 2048
+
+8096 queues queues Comment
+
+The primary benefit of enhancing
+
+121 82 DDIO efficiency is a decrease in
+read latency experienced by the
+application. This, in turn, leads to an
+improvement in workload
+performance
+
+Another beneficial side effect of
+
+93,299 74,584 utilizing DDIO effectively is the
+decrease in system memory
+demand.
+
+46,560 35,209
+
+139,437 107,462
+
+Table 7: Performance Analysis of iperf Workload with Reduced Device Queue Sizes Using Intel PMON Metrics.
+
+5.3 Performance Implications of Disabling Allocating Inbound Writes
+
+Disabling allocating Intel® DDIO inbound write flows significantly impacts the performance of the iperf3 workload. In this configuration,
+packet data is written directly to memory rather than cached in the Last Level Cache (LLC). In the iperf workload, the network packets are
+copied by the core; with non-allocating flows, this operation becomes more expensive as the cores now must read the data from memory
+instead of LLC. In addition to the latency impact, disabling allocating writes increases the demand for system memory. Consequently, we've
+observed a 16% performance degradation compared to when allocating Intel® DDIO inbound write flows are enabled.
+
+Time interval for PMON metrics
+
+= 41 second
+
+iperf3 Throughput, Gb/s
+
+io_inbound_read_bandwidth
+
+io_inbound_write_bandwidth
+
+UNC_lIO_DATA_REQ_OF_CPU
+MEM_READ.PARTO
+
+non-allocating +
+
+2048 queues 2048 queues
+
+Comment
+
+The benefits of DDIO to the ipert3
+
+701 605 workload can also be indirectly
+confirmed by switching to non-
+allocating inbound V/O write flows. In
+this configuration, packet data is
+written to memory rather than being
+cached in the LLC. In this case, we
+observe a 16% performance
+degradation from our previous
+example.
+
+As in the previous example,
+
+46,912 42,063 inbound read and write bandwidth
+metrics closely correlate with the
+workload throughput (in bytes
+instead of bits)
+
+44,614 36,336
+
+11,728,043,894
+10,515,872,956
+
+https:/Avww.intel,com/content/www/us/en/developer/articles/technical/ddio-analysis-performance-monitoring.html 18122
+
