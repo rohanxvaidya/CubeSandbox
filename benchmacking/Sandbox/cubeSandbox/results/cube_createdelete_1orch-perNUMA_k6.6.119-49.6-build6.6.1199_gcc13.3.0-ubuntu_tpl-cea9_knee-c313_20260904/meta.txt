@@ -1,0 +1,1 @@
+orchestrator=1x cubemaster affinity=0-287; driver=3 NUMA-pinned streams; template=tpl-cea9de24f21d4d4fac319a15 kernel=vmlinux-bm
