@@ -91,7 +91,7 @@ always stays as the source of truth.
 > For the default/manual per-point method, see **§3b** below. This section is the
 > automated wrapper that runs the entire c=100..350 sweep unattended.
 
-The canonical driver is `cwf-sweep-createdelete.sh`. Its exact loop:
+The canonical driver is `cwf-sweep-createdelete.sh` (in `scripts/`). Its exact loop:
 
 ```bash
 #!/usr/bin/env bash
@@ -234,28 +234,25 @@ remove the delete-side throttle.
 
 ## 5. Post-processing (charts + Excel)
 
-Reduce a completed run dir to charts and an Excel workbook.
+Reduce a completed run dir to charts and an Excel workbook. The scripts live in
+`scripts/` in this repo.
 
 ```bash
-# Create-latency chart + full summary workbook (Summary/PerPoint/PerSandbox tabs)
-python3 make_summary_xlsx.py            <run_dir>
+# Create-latency chart + per-sandbox chart + summary workbook
+python3 scripts/cwf_make_summary.py            <run_dir>
 
-# Delete-latency chart + delete-focused workbook
-python3 make_delete_summary.py          <run_dir>
-
-# Overlay: create vs delete on one axis, marks each 200 ms crossing
-python3 make_create_delete_overlay.py   <run_dir>
-
-# Combine multiple runs (e.g. Turin vs CWF) onto one plot
-python3 combine_turin_cwf.py
+# (optional) standalone create-latency-vs-concurrency chart, house style
+python3 scripts/make_cwf_create_latency.py     <run_dir> <config-label>
 ```
 
 Artifacts written into `<run_dir>`:
-- `cwf_create_latency_vs_concurrency.png` / `create_latency_vs_concurrency_avg_p95.png`
-- `delete_latency_vs_concurrency_avg_p95.png`
-- `create_delete_latency_vs_concurrency_overlay.png`
+- `cwf_create_latency_vs_concurrency.png`
 - `per_sandbox_latency.png`
-- `<run_dir_basename>_summary.xlsx`, `<run_dir_basename>_delete_summary.xlsx`
+- `<run_dir_basename>_summary.xlsx`
+
+> Note: with the reference-matched methodology the first few points (c=100–120)
+> are cold-start warmup and can trip the automatic 200 ms knee finder; read the
+> knee from the clean part of the curve (c≥130).
 
 ---
 
