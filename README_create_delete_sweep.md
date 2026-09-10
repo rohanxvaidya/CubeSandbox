@@ -43,15 +43,46 @@ Key facts held constant across all runs:
 | Per-point isolation | delete leftovers → `sync` → `drop_caches` → run → cleanup → sleep |
 | Egress | ON (`cube-egress` container up) |
 
----
-
-## 2. Environment variables
+> **Keep all 6 control-plane containers up for the ENTIRE sweep** (`cube-proxy`,
+> `cube-proxy-coredns`, `cube-egress`, `cube-sandbox-mysql`, `cube-sandbox-redis`,
+> `cube-webui`). Do not stop/restart any of them mid-run — egress stays in-path
+> throughout. Verify none cycled during a run with:
+> ```bash
+> docker ps --format '{{.Names}} {{.Status}}'   # expect 6, all Up
+> for c in $(docker ps --format '{{.Names}}'); do \
+>   docker inspect -f '{{.Name}} restarts={{.RestartCount}}' "$c"; done  # all restarts=0
+> ```
 
 ```bash
 export E2B_API_URL="http://127.0.0.1:3000"
 export E2B_API_KEY="e2b_000000"
 export CUBE_TEMPLATE_ID="<READY template id, e.g. tpl-cea9de24f21d4d4fac319a15>"
 ```
+
+---
+
+## 2b. Result location (`/data`)
+
+All run output goes under **`/data`** (`OUT=/data/cwf-sweep-createdelete-<ts>/`).
+`/data` is the large data volume on the benchmark host — keep every run dir there
+(raw JSON + CSV + charts). Confirm it is mounted with enough free space before a
+sweep:
+
+```bash
+df -h /data           # ensure /data is a real mount with GBs free
+mount | grep ' /data ' # (optional) confirm the backing device / bind
+mkdir -p /data        # ensure it exists
+```
+
+If `/data` is a bind/mount, point it at the big disk before running (example):
+
+```bash
+# example bind of a data disk to /data (adjust device/UUID to your host)
+mount /dev/<data-disk> /data          # or: mount --bind /mnt/bigdisk /data
+```
+
+Only copy a run dir into the repo (`results/`) when publishing; the `/data` copy
+always stays as the source of truth.
 
 ---
 
