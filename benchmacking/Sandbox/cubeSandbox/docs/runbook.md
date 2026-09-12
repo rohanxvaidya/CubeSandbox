@@ -64,10 +64,19 @@ systemctl daemon-reload && systemctl restart docker
 ```
 
 ### 3.2 Run the one-click installer
+**Obtain the bundle first.** `cube-sandbox-one-click-v0.4.0.tar.gz` is ~229 MB
+(mostly `assets/package/sandbox-package.tar.gz` 178 MB + the guest-kernel
+artifacts 54 MB), so it is **not** committed to this repo — GitHub rejects files
+over 100 MB, and binary payloads don't belong in git history. Download it from the
+official CubeSandbox PVM deploy guide: <https://cubesandbox.com/guide/pvm-deploy.html>
+(source repo: <https://github.com/TencentCloud/CubeSandbox>). On the benchmark
+host it is kept at `/root/cube-sandbox-one-click-v0.4.0.tar.gz`.
+
 ```bash
 tar xzf cube-sandbox-one-click-v0.4.0.tar.gz
 cd cube-sandbox-one-click-v0.4.0
-bash install.sh                    # set CUBE_PVM_ENABLE=1 first to enable PVM
+cp env.example .env                # configure deploy options (e.g. CUBE_PVM_ENABLE) in .env
+bash install.sh
 ```
 This deploys CubeMaster + Cubelet and brings up the 6 support containers as
 systemd services under `cube-sandbox-control.target` (so they persist across
