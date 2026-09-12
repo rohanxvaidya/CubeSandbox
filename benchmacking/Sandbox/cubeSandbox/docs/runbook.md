@@ -40,7 +40,27 @@ The single-node platform (1 CubeMaster + 1 Cubelet) and its 6 support containers
 are stood up by the `cube-sandbox-one-click` bundle — they are **not** created by
 hand. Docker must be installed first.
 
-### 3.1 Install Docker
+### 3.1 Prerequisites
+- **`/data` disk (XFS + reflink).** Sandbox rootfs uses CoW reflink clones under
+  `/data`, so back it with a dedicated disk formatted **XFS with `reflink=1`** and
+  mount it before running `install.sh`:
+  ```bash
+  wipefs -a /dev/<disk>
+  mkfs.xfs -m reflink=1 -L cubedata -f /dev/<disk>
+  mkdir -p /data && mount /dev/<disk> /data
+  # persist across reboots (replace any existing /data line)
+  echo "UUID=$(blkid -s UUID -o value /dev/<disk>)  /data  xfs  defaults,noatime  0  0" >> /etc/fstab
+  systemctl daemon-reload
+  xfs_info /data | grep -q 'reflink=1' && echo "reflink OK"
+  ```
+- **Host eBPF/BTF enabled.** Cube networking needs BPF + BTF in the host kernel:
+  ```bash
+  ls -l /sys/kernel/btf/vmlinux
+  grep -E 'CONFIG_DEBUG_INFO_BTF|CONFIG_BPF_SYSCALL|CONFIG_BPF_JIT' /boot/config-$(uname -r)
+  ```
+  If BTF is absent, enable these configs and rebuild the host kernel.
+
+### 3.2 Install Docker
 CubeSandbox needs Docker (with the compose plugin); the control-plane services run
 as containers. On CentOS Stream 9 / el9:
 ```bash
@@ -63,7 +83,7 @@ EOF
 systemctl daemon-reload && systemctl restart docker
 ```
 
-### 3.2 Run the one-click installer
+### 3.3 Run the one-click installer
 **Obtain the bundle first.** `cube-sandbox-one-click-v0.4.0.tar.gz` is ~229 MB
 (mostly `assets/package/sandbox-package.tar.gz` 178 MB + the guest-kernel
 artifacts 54 MB), so it is **not** committed to this repo — GitHub rejects files
@@ -91,7 +111,7 @@ reboot):
 | `cube-egress` | Egress MITM / TLS-intercept policy plane (CA baked into sandboxes) |
 | `cube-webui` | Web UI (openresty) — not needed for benchmarking |
 
-### 3.3 Verify the deployment
+### 3.4 Verify the deployment
 ```bash
 docker ps                                   # 6 control-plane containers up
 systemctl status cube-sandbox-control.target
