@@ -34,7 +34,66 @@ layouts.
 
 ---
 
-## 3. Guest-kernel builds (toolchain matrix)
+## 3. Deploy CubeSandbox (Docker + one-click)
+
+The single-node platform (1 CubeMaster + 1 Cubelet) and its 6 support containers
+are stood up by the `cube-sandbox-one-click` bundle — they are **not** created by
+hand. Docker must be installed first.
+
+### 3.1 Install Docker
+CubeSandbox needs Docker (with the compose plugin); the control-plane services run
+as containers. On CentOS Stream 9 / el9:
+```bash
+dnf -y install dnf-plugins-core
+dnf config-manager --add-repo https://download.docker.com/linux/centos/docker-ce.repo
+dnf -y install docker-ce docker-ce-cli containerd.io docker-compose-plugin
+systemctl enable --now docker
+docker version                     # verify the daemon is up
+```
+Behind the Intel lab proxy, point the Docker daemon at it so image pulls/builds
+work:
+```bash
+mkdir -p /etc/systemd/system/docker.service.d
+cat >/etc/systemd/system/docker.service.d/http-proxy.conf <<'EOF'
+[Service]
+Environment="HTTP_PROXY=http://<proxy-host>:<port>"
+Environment="HTTPS_PROXY=http://<proxy-host>:<port>"
+Environment="NO_PROXY=localhost,127.0.0.1"
+EOF
+systemctl daemon-reload && systemctl restart docker
+```
+
+### 3.2 Run the one-click installer
+```bash
+tar xzf cube-sandbox-one-click-v0.4.0.tar.gz
+cd cube-sandbox-one-click-v0.4.0
+bash install.sh                    # set CUBE_PVM_ENABLE=1 first to enable PVM
+```
+This deploys CubeMaster + Cubelet and brings up the 6 support containers as
+systemd services under `cube-sandbox-control.target` (so they persist across
+reboot):
+
+| Container | Role |
+|---|---|
+| `cube-sandbox-mysql` | Template & sandbox metadata (mysql:8.0) |
+| `cube-sandbox-redis` | Caching layer (redis:7-alpine) |
+| `cube-proxy` | Front proxy for CubeAPI |
+| `cube-proxy-coredns` | Internal DNS for sandboxes (coredns) |
+| `cube-egress` | Egress MITM / TLS-intercept policy plane (CA baked into sandboxes) |
+| `cube-webui` | Web UI (openresty) — not needed for benchmarking |
+
+### 3.3 Verify the deployment
+```bash
+docker ps                                   # 6 control-plane containers up
+systemctl status cube-sandbox-control.target
+ss -ltn '( sport = :3000 )'                 # CubeAPI listening on :3000
+```
+Once these are green, continue to guest-kernel selection and template creation
+below.
+
+---
+
+## 4. Guest-kernel builds (toolchain matrix)
 
 All guest kernels live at `/usr/local/services/cubetoolbox/cube-kernel-scf/`; the
 active kernel is the `vmlinux` symlink. Source: `OpenCloudOS-Kernel` branch
@@ -48,7 +107,7 @@ active kernel is the `vmlinux` symlink. Source: `OpenCloudOS-Kernel` branch
 | `vmlinux-bm` | build `6.6.1199-0009-03_2.0.1` (labelled 6.6.119-49.6) | gcc 13.3.0 (Ubuntu), Tencent CI binary |
 | `vmlinux-pvm` | 6.6.69 | gcc 13.3.0 (Ubuntu), Tencent original |
 
-### 3.1 Critical build settings
+### 4.1 Critical build settings
 - **`CONFIG_ASYNC_FORK` DISABLED** — required for the 4-level-paging build
   (`mm/async_fork.c` exports `__p4d_alloc`, a static inline under 4-level paging →
   modpost error otherwise). `make olddefconfig` re-enables it, so re-disable after:
@@ -58,7 +117,7 @@ active kernel is the `vmlinux` symlink. Source: `OpenCloudOS-Kernel` branch
 - BTF enabled (`CONFIG_DEBUG_INFO_BTF`) → build host needs `pahole`/`dwarves`.
 - Confirm the PVH note post-build: `readelf -n vmlinux | grep 0x00000012`.
 
-### 3.2 Building with the exact Ubuntu gcc 13.3.0 toolchain (Tencent match)
+### 4.2 Building with the exact Ubuntu gcc 13.3.0 toolchain (Tencent match)
 Red Hat el9 only ships gcc `11.5.0` and gcc-toolset-13 `13.3.1` — there is **no
 Red Hat 13.3.0** (Red Hat's build of upstream 13.3 is always labelled `13.3.1`).
 The only toolchain that self-reports `13.3.0` is Ubuntu 24.04. Build in a
@@ -77,7 +136,7 @@ docker run --rm -e http_proxy -e https_proxy -e no_proxy \
 `python3` + `zlib1g-dev` are required or the libbpf `resolve_btfids` host tool
 fails. Result: `gcc-13 (Ubuntu 13.3.0-6ubuntu2~24.04.1) 13.3.0`, ld 2.42.
 
-### 3.3 Fetching the source behind the lab proxy
+### 4.3 Fetching the source behind the lab proxy
 The Intel proxy (`proxy-dmz.intel.com:912`) blocks large clones. Use a blobless
 clone then batch-fetch blobs by SHA:
 ```bash
@@ -85,7 +144,7 @@ git clone --filter=blob:none --no-checkout <repo>
 # then: git fetch origin <up-to-1000 SHAs per batch>
 ```
 
-### 3.4 Installing / activating a kernel
+### 4.4 Installing / activating a kernel
 ```bash
 strip -s vmlinux -o $KDIR/vmlinux-<name>            # ~51.5 MB
 ln -sfn vmlinux-<name> $KDIR/vmlinux                # activate
@@ -95,7 +154,7 @@ cubemastercli -a 127.0.0.1 tpl redo --template-id <TID> --wait --interval 3s --j
 
 ---
 
-## 4. Template & per-sandbox spec
+## 5. Template & per-sandbox spec
 
 | Item | Value |
 |---|---|
@@ -113,9 +172,9 @@ Support stack (6 Docker containers, kept up throughout every run):
 
 ---
 
-## 5. Tuning parameters (the BKM)
+## 6. Tuning parameters (the BKM)
 
-### 5.1 CubeMaster — orchestrator (`CubeMaster/conf.yaml`)
+### 6.1 CubeMaster — orchestrator (`CubeMaster/conf.yaml`)
 | Parameter | Value |
 |---|---|
 | `create_concurrent_limit` | **500** |
@@ -126,7 +185,7 @@ Support stack (6 Docker containers, kept up throughout every run):
 | `http_port` / `grpc_port` | 8089 / 9999 |
 | scheduler filters | cpu, mem, template_locality, realtime_create_num |
 
-### 5.2 Cubelet — compute agent (`Cubelet/config/config.toml`)
+### 6.2 Cubelet — compute agent (`Cubelet/config/config.toml`)
 | Parameter | Value |
 |---|---|
 | `tap_init_num` | **500** (pre-created TAP devices — the key BKM) |
@@ -142,12 +201,12 @@ Support stack (6 Docker containers, kept up throughout every run):
 | NIC / MAC | `ens4055f1` / `20:90:6f:fc:fc:fc`, gw `20:90:6f:cf:cf:cf`, MTU 1500 |
 | CIDR | `192.168.0.0/18` |
 
-### 5.3 Cubelet dynamic (`Cubelet/dynamicconf/conf.yaml`)
+### 6.3 Cubelet dynamic (`Cubelet/dynamicconf/conf.yaml`)
 Per-node caps all **0 = unlimited**: `creation_concurrent_num=0`, `mcpu_limit=0`,
 `mvm_limit=0`, `mem_limit=""`. `disable_host_cgroup=true`,
 `disable_host_netfile=true`, default DNS `119.29.29.29`.
 
-### 5.4 Database / cache pools
+### 6.4 Database / cache pools
 App-side pools (`ossdb_config` = `instance_db_config`): `max_open_conns=100`,
 `max_idle_conns=25`, `max_conn_life_time_seconds=300`,
 `conn_timeout/read/write=5/5/5 s`, `db_name=cube_mvp`.
@@ -164,7 +223,7 @@ Redis (`redis` / `redis_read` / `redis_write`): `max_active=32`, `max_idle=8`,
 
 ---
 
-## 6. Benchmark methodology
+## 7. Benchmark methodology
 
 Driver: `cube-bench` (compiled binary) at
 `/root/cube-src/CubeSandbox/examples/cube-bench/bin/cube-bench`.
@@ -183,7 +242,7 @@ cube-bench --no-tui -m create-delete -c <c> -n <c*10> -w 3 -t <TID> \
 - **Success criterion: 100 %** (0 errors) at every point.
 - **Knee**: linear-interpolated C where mean create latency crosses 200 ms.
 
-### 6.1 Orchestration layouts
+### 7.1 Orchestration layouts
 - **`1orch-allNUMA`**: a single `cube-bench` stream spanning all 288 threads.
 - **`1orch-perNUMA`**: 3 `cube-bench` streams, one `taskset`-pinned per NUMA node
   (0-95 / 96-191 / 192-287), each running `C/3`. NOTE: the CubeMaster scheduler
@@ -196,7 +255,7 @@ support containers never drop.
 
 ---
 
-## 7. Results — 200 ms knee (all tpl-cea9, 100 % success)
+## 8. Results — 200 ms knee (all tpl-cea9, 100 % success)
 
 | Guest kernel build | Toolchain | 1orch-allNUMA | 1orch-perNUMA |
 |---|---|---|---|
@@ -214,7 +273,7 @@ Key findings:
 
 ---
 
-## 8. Post-run artifacts & conventions
+## 9. Post-run artifacts & conventions
 
 After every sweep, a Turin-style chart is generated **inside** the run's `/data`
 result dir: dark-blue avg + light-blue dashed p95 + red 200 ms line + annotated
@@ -233,7 +292,7 @@ Each dir contains: `sweep.csv`, per-point JSON/logs, `meta.txt`, `uptime.log`
 
 ---
 
-## 9. End-to-end reproduction
+## 10. End-to-end reproduction
 
 ```bash
 # 1. Activate the desired guest kernel
