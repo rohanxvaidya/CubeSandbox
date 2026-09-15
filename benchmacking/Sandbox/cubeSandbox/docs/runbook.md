@@ -9,6 +9,58 @@ Clearwater Forest (CWF) node, including the guest-kernel toolchain matrix and th
 > Intel Xeon 6990E node; results will differ on other hardware/kernels.
 
 ---
+## 0. Quick Start (newcomer TL;DR)
+
+Goal: run the CubeSandbox create-delete concurrency sweep and get a 200 ms-knee
+number. This is the 5-minute path; the detailed sections (§3–§10) explain the
+why and the tuning.
+
+**Assumes:** CubeSandbox v0.4.0 is already deployed (6 control-plane containers
+up), a template is `READY`, and `cube-bench` is built. If not, do §3 (deploy)
+and §5 (template) first.
+
+```bash
+# 1. Sanity check the platform is up
+docker ps --format '{{.Names}}'            # expect 6: mysql, redis, proxy,
+                                           # proxy-coredns, egress, webui
+curl -s -o /dev/null -w '%{http_code}\n' \
+  -H 'X-API-Key: e2b_000000' http://127.0.0.1:3000/sandboxes   # expect 200
+
+# 2. Set the run environment
+export E2B_API_URL="http://127.0.0.1:3000"
+export E2B_API_KEY="e2b_000000"
+export CUBE_TEMPLATE_ID="tpl-cea9de24f21d4d4fac319a15"     # any READY template
+BENCH=/root/cube-src/CubeSandbox/examples/cube-bench/bin/cube-bench
+
+# 3. Smoke test — one tiny point (should print create/delete latency, 100% ok)
+$BENCH --no-tui -m create-delete -c 10 -n 100 -w 3 \
+  -t "$CUBE_TEMPLATE_ID" --api-url "$E2B_API_URL" --api-key "$E2B_API_KEY" \
+  -o /data/smoke.json && echo OK
+
+# 4. One real point at your target concurrency (e.g. c=200)
+cpupower -c all frequency-set -g performance      # match run conditions
+$BENCH --no-tui -m create-delete -c 200 -n 2000 -w 3 \
+  -t "$CUBE_TEMPLATE_ID" --api-url "$E2B_API_URL" --api-key "$E2B_API_KEY" \
+  -o /data/c200.json
+
+# 5. Full sweep c=100..350 (writes results + chart into a /data run dir)
+bash run_3orch_per_numa_sweep.sh          # 1orch-perNUMA (NUMA-pinned streams)
+# or: bash e2e-repo-latency-sweep.sh      # 1orch-allNUMA (single stream)
+```
+
+**What you get:** a `/data/cube_createdelete_..._knee-c<NNN>_<date>/` directory
+with per-point JSON, `sweep.csv`, `meta.txt`, and a create-latency-vs-concurrency
+chart. The headline number is the **200 ms knee** — the concurrency at which mean
+create latency crosses 200 ms at 100% success.
+
+**Key flags:** `-c` = concurrency, `-n = c*10` = total ops, `-w 3` = warmup rounds
+(excluded), `-m create-delete` = create then delete each sandbox.
+
+**Golden rules (see §6, §7):** keep all 6 control-plane containers up for the
+whole sweep; set the CPU governor to `performance`; drop caches (`sync; echo 3 >
+/proc/sys/vm/drop_caches`) between points; require 100% success at every point.
+
+---
 
 ## 1. Objective
 
