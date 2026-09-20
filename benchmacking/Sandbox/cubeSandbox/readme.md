@@ -116,6 +116,10 @@ export CUBE_TEMPLATE_ID=<your-template-id>
   cat /sys/kernel/debug/sched/preempt  
   ```
 - Set `ibt=off` in kernel parameter to workaround the compability issue between VM and Host, just for benchmark;
+  - **Intel only.** IBT (Indirect Branch Tracking) is an Intel CET feature; it triple-faults the guest kernel (`exc_control_protection` → `Kernel panic`, VM shows `VmShutdown` instead of `VsockServerReady`, template create FAILED). Needed on Intel hosts (e.g. CWF Xeon 6990E, Granite Rapids Xeon 6980P); **not** needed on AMD (e.g. Turin EPYC), where it can be omitted.
+  - **`ibt=off` only works if CET is compiled INTO the host kernel.** The handler lives in `arch/x86/kernel/cet.c` (guarded by `CONFIG_X86_CET`); if you disable `CONFIG_X86_KERNEL_IBT`/`CONFIG_X86_USER_SHADOW_STACK` (which deselects `CONFIG_X86_CET`), the `ibt=off` handler is compiled out and the flag becomes a silent no-op. Keep CET **on** (the GNR/SRF BKC configs already have `CONFIG_X86_KERNEL_IBT=y`) and rely on `ibt=off`.
+  - **Verify it actually took effect:** `ibt` must be **absent** from `/proc/cpuinfo` (checking `dmesg` or `/proc/cmdline` alone is not enough — `ibt=off` calls `setup_clear_cpu_cap(X86_FEATURE_IBT)`, and KVM only stops advertising IBT to the guest once it's cleared from `boot_cpu_data`).
+  - **Persist it.** `make install` / `kernel-install` regenerates the boot entry and drops extra args, so add `ibt=off` to `/etc/default/grub` (`GRUB_CMDLINE_LINUX`) and/or `/etc/kernel/cmdline`, not just via a one-off `grubby --args`.
 
 #### Tune the config for cubeSandbox:
 Enlarge the limitation for concurrency, and restart all of the service;

@@ -399,3 +399,56 @@ bash run_3orch_per_numa_sweep.sh      # 1orch-perNUMA
 
 # 5. Generate the chart into the result dir, then rename per the convention.
 ```
+
+---
+
+## 11. Granite Rapids port (Intel Xeon 6980P, GNR-AP)
+
+Reproduced on a second Intel node — this documents only the **deltas** from the CWF
+sections above; methodology (§7), tuning (§6), template (§5) are identical.
+
+| Item | Value |
+|---|---|
+| Node | `avc15` |
+| CPU | Intel **Xeon 6980P** (Granite Rapids-AP), 1 socket, **128 cores / 256 threads** |
+| NUMA | **SNC3 → 3 nodes**: node0 `0-42,128-170`, node1 `43-85,171-213`, node2 `86-127,214-255` |
+| Host kernel | **7.1.0**, built from the **GNR BKC** config (`stack/kernel-build/config/config-6.6.0-gnr.bkc…` → `make olddefconfig`) |
+| Guest kernel | `vmlinux-bm` (6.6.1199-0009-03_2.0.1) — same as CWF |
+| Template | `cubebox` v2, 2000m / 2000Mi, ext4 1 GiB, **egress CA baked** (`--with-cube-ca=true`) |
+
+### 11.1 REQUIRED: `ibt=off` with CET compiled **in** (Intel-only gotcha)
+GNR exposes CET/IBT to the guest; without the workaround the `vmlinux-bm` guest
+**triple-faults** at boot (`exc_control_protection` → `Kernel panic`; the VMM shows
+`VmShutdown` instead of `VsockServerReady`, and template create returns FAILED).
+
+- Set **`ibt=off`** on the host boot line (per `readme.md`). This is **Intel-only** —
+  AMD (Turin) does not need it.
+- **Keep CET compiled in** (`CONFIG_X86_KERNEL_IBT=y`; the GNR BKC config already does).
+  Disabling CET removes the `ibt=off` handler (`arch/x86/kernel/cet.c`) and the flag
+  silently no-ops.
+- **Verify** `ibt` is **absent from `/proc/cpuinfo`** (not just `dmesg`/cmdline) — only
+  then does `setup_clear_cpu_cap` drop IBT from `boot_cpu_data`, so KVM stops
+  advertising it to the guest (`kvm_cpu_cap_init` ANDs guest caps against `boot_cpu_data`).
+- **Persist** it in `/etc/default/grub` + `/etc/kernel/cmdline` — `make install`
+  regenerates the BLS entry and strips one-off `grubby --args`.
+
+### 11.2 Sweep scripts (SNC3 = 3 NUMA nodes)
+Two per-NUMA layouts, both `seq 100 10 350`, `-w 3`, per-point cleanup + drop_caches,
+6 control-plane containers monitored throughout (`uptime.log`):
+
+- **`run_1orch_per_numa_sweep_gnr.sh`** — 1 shared CubeMaster + `cube-bench` driver
+  split into **3 NUMA-pinned streams** (mirrors CWF `run_3orch_per_numa_sweep.sh`).
+- **`run_3orch_per_numa_gnr.sh`** — **3 CubeMaster orchestrators**, one `numactl`-pinned
+  per NUMA node (ports 8089/8090/8091, sharing the single Cubelet); reversible teardown
+  restores the systemd master (mirrors Turin `run_sweep_1orch_per_numa.sh`).
+
+### 11.3 Results — 200 ms knee (tuned BKM=500, `ibt=off`, 100 % success)
+| Layout | Knee | Notes |
+|---|---|---|
+| 1 CubeMaster + 3 NUMA-pinned drivers | **~c284** | flat ~85–115 ms to c180 |
+| 3 CubeMasters (1 orch / NUMA) | **~c277** | |
+| *(untuned, defaults=100)* | ~c176 | spikes at c180 — shows tuning is essential |
+| CWF reference (Xeon 6990E) | ~c313 | for comparison |
+
+Both GNR per-NUMA layouts land ~c277–284 at 100 % success, below CWF's ~c313.
+**The BKM tuning (§6, limits 100→500) is essential** — the untuned box knees at ~c176.
