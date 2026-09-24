@@ -110,7 +110,73 @@ hand. Docker must be installed first.
   ls -l /sys/kernel/btf/vmlinux
   grep -E 'CONFIG_DEBUG_INFO_BTF|CONFIG_BPF_SYSCALL|CONFIG_BPF_JIT' /boot/config-$(uname -r)
   ```
-  If BTF is absent, enable these configs and rebuild the host kernel.
+  If BTF is absent (no `/sys/kernel/btf/vmlinux`, or the config file is missing
+  because the host runs a self-built kernel), build a BTF-enabled 7.1.0 host
+  kernel per **§3.1.1**.
+
+### 3.1.1 Build the 7.1.0 host kernel (BTF-enabled)
+
+The host kernel for these runs is a **self-built `7.1.0`** (not a distro package),
+so `/boot/config-$(uname -r)` and `/sys/kernel/btf/vmlinux` are absent until you
+build it with the options below. Source tree: `/root/linux-7.1` (from
+`linux-7.1.tar.xz`).
+
+> **Ordering gotcha (root cause of missing BTF):** `CONFIG_DEBUG_INFO_BTF`
+> depends on `PAHOLE_VERSION >= 122` (`lib/Kconfig.debug`). If `pahole`/`dwarves`
+> is not installed **before** you run `make *config`, the option is silently
+> absent from `.config` (it won't even show as `# ... is not set`) and the built
+> `vmlinux` has no `.BTF` section. **Install `dwarves` first.**
+
+```bash
+# 1. Toolchain + BTF generator (pahole). dwarves MUST be present before configuring.
+dnf install -y gcc make ncurses-devel flex bison openssl openssl-devel \
+  elfutils-libelf-devel bc perl dwarves        # CentOS Stream 9 / el9
+pahole --version                                # need >= v1.22 (el9 ships 1.31)
+
+# 2. Seed .config from a known-good base for this platform, then adapt to 7.1.
+cd /root/linux-7.1
+cp .config .config.bak.$(date +%s) 2>/dev/null || true
+cp /boot/config-<baseline>  .config            # e.g. the installed CWF BKC config,
+                                               # or the sandbox kernel-build template
+                                               # stack/kernel-build/config/config-6.11.5-1.el9.elrepo.x86_64
+yes '' | make oldconfig                        # answer NEW symbols with defaults
+
+# 3. Enable the required BPF + BTF options (idempotent).
+./scripts/config --file .config \
+  --enable  BPF --enable BPF_SYSCALL --enable BPF_JIT --enable BPF_JIT_ALWAYS_ON \
+  --enable  DEBUG_INFO --enable DEBUG_INFO_BTF --enable DEBUG_INFO_BTF_MODULES
+
+# 4. Sandbox build has no signing keys — clear them or `make install` fails.
+./scripts/config --file .config \
+  --disable SYSTEM_TRUSTED_KEYS --disable SYSTEM_REVOCATION_KEYS
+make olddefconfig
+
+# 5. Verify the options actually landed before building.
+grep -E '^(CONFIG_DEBUG_INFO_BTF|CONFIG_DEBUG_INFO_BTF_MODULES|CONFIG_BPF_SYSCALL|CONFIG_BPF_JIT)=' .config
+
+# 6. Build, install modules + image.
+make -j"$(nproc)"
+readelf -S vmlinux | grep -q '\.BTF' && echo "vmlinux has .BTF OK"
+make modules_install install
+
+# 7. `make install` does NOT copy .config for a custom build — do it so the
+#    §3.1 config check (and tools that read /boot/config-$(uname -r)) work.
+cp .config /boot/config-7.1.0
+
+# 8. Point grub at the new kernel and reboot into it.
+grubby --set-default /boot/vmlinuz-7.1.0
+grubby --default-kernel                        # expect /boot/vmlinuz-7.1.0
+reboot
+```
+
+After reboot, both §3.1 checks must pass:
+```bash
+ls -l /sys/kernel/btf/vmlinux                                        # exists
+grep -E 'CONFIG_DEBUG_INFO_BTF|CONFIG_BPF_SYSCALL|CONFIG_BPF_JIT' /boot/config-$(uname -r)
+```
+
+> Note: this is the **host** kernel. The **guest** kernels the sandboxes boot
+> (`6.6.119-49.6` builds / `vmlinux-bm`) are separate — see §4.
 
 ### 3.2 Install Docker
 CubeSandbox needs Docker (with the compose plugin); the control-plane services run
