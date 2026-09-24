@@ -142,9 +142,14 @@ cp /boot/config-<baseline>  .config            # e.g. the installed CWF BKC conf
 yes '' | make oldconfig                        # answer NEW symbols with defaults
 
 # 3. Enable the required BPF + BTF options (idempotent).
+#    Also clear BTF's blockers: DEBUG_INFO_BTF `depends on !DEBUG_INFO_REDUCED &&
+#    !DEBUG_INFO_SPLIT && !GCC_PLUGIN_RANDSTRUCT` — if the baseline set any of
+#    them, `make olddefconfig` (step 4) would silently drop BTF again.
 ./scripts/config --file .config \
   --enable  BPF --enable BPF_SYSCALL --enable BPF_JIT --enable BPF_JIT_ALWAYS_ON \
-  --enable  DEBUG_INFO --enable DEBUG_INFO_BTF --enable DEBUG_INFO_BTF_MODULES
+  --enable  DEBUG_INFO --enable DEBUG_INFO_BTF --enable DEBUG_INFO_BTF_MODULES \
+  --disable DEBUG_INFO_REDUCED --disable DEBUG_INFO_SPLIT \
+  --disable GCC_PLUGIN_RANDSTRUCT
 
 # 4. Sandbox build has no signing keys — clear them or `make install` fails.
 ./scripts/config --file .config \
